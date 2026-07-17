@@ -88,6 +88,7 @@ dependencies = [
     # Web server for Launch Lab
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.30.0,<1.0.0",
+    "ptyprocess>=0.7.0,<1.0.0", # real PTY sessions for Launch Lab's live terminal
 
     # Build tools (required by opencv-python-headless on some platforms)
     "cmake>=3.29.0.1,<4.2.0",

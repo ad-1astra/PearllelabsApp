@@ -9,8 +9,12 @@ from __future__ import annotations
 import importlib.metadata
 import shutil
 import sys
+from pathlib import Path
 
-REPO_ROOT = "/home/pearllabs/Desktop/Paul/lerobot"
+# .../<repo_root>/src/lerobot/robots/launch_lab/commands.py -- derived from this file's
+# own location (not hardcoded) so installs work from wherever the repo was cloned, both
+# for other users and for the differently-pathed checkout Render builds from.
+REPO_ROOT = str(Path(__file__).resolve().parents[4])
 
 
 def _installed(dist_name: str) -> bool:

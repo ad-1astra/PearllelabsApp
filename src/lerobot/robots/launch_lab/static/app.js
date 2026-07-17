@@ -576,7 +576,24 @@ function hydrateStaticIcons() {
   });
 }
 
+function showLauncher() {
+  // Served from a hosted origin (e.g. Firebase) instead of by the local helper itself.
+  // A fetch()/WebSocket from here to 127.0.0.1 is exactly what browsers' Private
+  // Network Access policy silently blocks (no prompt, no console-visible error to a
+  // non-technical user -- it just looks like an empty page). A plain top-level
+  // navigation via a real link click is NOT subject to that restriction, so send the
+  // user there instead of trying to drive the app cross-origin.
+  hydrateStaticIcons();
+  $("#view-launcher").classList.remove("hidden");
+  $("#view-map").classList.add("hidden");
+  $("#launcher-link").href = `http://${LOCAL_HELPER_HOST}/`;
+}
+
 async function init() {
+  if (!IS_LOCAL) {
+    showLauncher();
+    return;
+  }
   hydrateStaticIcons();
   state.quest = await api("/api/quest");
   const snap = await api("/api/state");
