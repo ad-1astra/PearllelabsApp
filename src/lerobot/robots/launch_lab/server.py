@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import re
 import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib import request as urllib_request
+
+try:
+    import websockets
+except ImportError:  # pragma: no cover - optional dependency in some environments
+    websockets = None
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from lerobot.robots.launch_lab import commands
-from lerobot.robots.launch_lab.pty_session import PtySession
+from lerobot.robots.launch_lab.pty_session import PtySession, strip_ansi
 from lerobot.robots.launch_lab.quest_state import LEVEL_TITLES, LEVELS, AppState
 from lerobot.robots.setup_quest_utils import detect_error_suggestion
 
@@ -121,7 +128,11 @@ async def ws_events(websocket: WebSocket) -> None:
 
 # ── session registry ─────────────────────────────────────────────
 
+_SESSION_HELPER_URL = (os.environ.get("LAUNCH_LAB_HELPER_URL") or os.environ.get("LAUNCH_LAB_REMOTE_HELPER_URL") or "").rstrip("/")
+_REMOTE_HELPER_ENABLED = bool(_SESSION_HELPER_URL)
+
 _sessions: dict[str, PtySession] = {}
+_session_transport: dict[str, str] = {}
 _session_kind: dict[str, str] = {}  # session_id -> action key, for on_exit bookkeeping
 _active_session_id: str | None = None
 
@@ -132,13 +143,19 @@ _active_session_id: str | None = None
 _OUTPUT_BUFFER_CAP = 400_000
 _session_output: dict[str, str] = {}
 _session_exit_code: dict[str, int | None] = {}
+_session_line_buf: dict[str, str] = {}
+_session_on_line: dict[str, Any] = {}
+_session_on_exit_extra: dict[str, Any] = {}
 
 
-def _start_session(action: str, cmd: str, on_line=None, on_exit_extra=None, filter_output=None) -> str:
+def _start_local_session(action: str, cmd: str, on_line=None, on_exit_extra=None, filter_output=None) -> str:
     global _active_session_id
     session_id = uuid.uuid4().hex[:12]
     _session_output[session_id] = ""
     _session_exit_code[session_id] = None
+    _session_line_buf[session_id] = ""
+    _session_on_line[session_id] = on_line
+    _session_on_exit_extra[session_id] = on_exit_extra
 
     def on_output(data: bytes) -> None:
         text = data.decode("utf-8", errors="replace")
@@ -179,10 +196,51 @@ def _start_session(action: str, cmd: str, on_line=None, on_exit_extra=None, filt
         on_exit=on_exit,
     )
     _sessions[session_id] = session
+    _session_transport[session_id] = "local"
     _session_kind[session_id] = action
     _active_session_id = session_id
     session.start()
     return session_id
+
+
+def _start_remote_session(action: str, cmd: str, on_line=None, on_exit_extra=None) -> str | None:
+    if not _REMOTE_HELPER_ENABLED:
+        return None
+
+    payload = json.dumps({"action": action, "cmd": cmd, "cwd": commands.REPO_ROOT}).encode("utf-8")
+    req = urllib_request.Request(
+        f"{_SESSION_HELPER_URL}/api/run",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            session_id = body.get("session_id")
+    except Exception as exc:  # pragma: no cover - depends on remote helper availability
+        print(f"Remote helper unavailable: {exc}")
+        return None
+
+    if not session_id:
+        return None
+
+    _session_output[session_id] = ""
+    _session_exit_code[session_id] = None
+    _session_line_buf[session_id] = ""
+    _session_on_line[session_id] = on_line
+    _session_on_exit_extra[session_id] = on_exit_extra
+    _session_transport[session_id] = "remote"
+    _session_kind[session_id] = action
+    _active_session_id = session_id
+    return session_id
+
+
+def _start_session(action: str, cmd: str, on_line=None, on_exit_extra=None, filter_output=None) -> str:
+    if _REMOTE_HELPER_ENABLED:
+        remote_session_id = _start_remote_session(action, cmd, on_line=on_line, on_exit_extra=on_exit_extra)
+        if remote_session_id is not None:
+            return remote_session_id
+    return _start_local_session(action, cmd, on_line=on_line, on_exit_extra=on_exit_extra, filter_output=filter_output)
 
 
 async def _send_term_output(session_id: str, text: str) -> None:
@@ -199,16 +257,68 @@ async def _send_term_output(session_id: str, text: str) -> None:
 _term_clients: dict[str, set[WebSocket]] = {}
 
 
+def _dispatch_output(session_id: str, text: str) -> None:
+    if not text:
+        return
+    buf = _session_line_buf.get(session_id, "") + strip_ansi(text.encode("utf-8", errors="replace"))
+    while "\n" in buf:
+        line, buf = buf.split("\n", 1)
+        line = line.strip()
+        if line:
+            on_line = _session_on_line.get(session_id)
+            if on_line:
+                on_line(line)
+    _session_line_buf[session_id] = buf
+
+
+async def _proxy_remote_terminal(websocket: WebSocket, session_id: str) -> None:
+    if websockets is None:
+        await websocket.send_json({"type": "output", "data": "\r\n[remote helper unavailable]\r\n"})
+        await websocket.close()
+        return
+
+    helper_url = _SESSION_HELPER_URL.replace("http://", "ws://").replace("https://", "wss://")
+    helper_ws_url = f"{helper_url}/ws/term/{session_id}"
+    try:
+        async with websockets.connect(helper_ws_url) as helper_ws:  # type: ignore[attr-defined]
+            async def forward_helper_to_browser() -> None:
+                async for payload in helper_ws:
+                    msg = json.loads(payload)
+                    if msg.get("type") == "output":
+                        _dispatch_output(session_id, msg.get("data", ""))
+                    elif msg.get("type") == "exit":
+                        _session_exit_code[session_id] = msg.get("code")
+                        on_exit_extra = _session_on_exit_extra.get(session_id)
+                        if on_exit_extra:
+                            on_exit_extra(msg.get("code", 0))
+                    await websocket.send_json(msg)
+
+            async def forward_browser_to_helper() -> None:
+                while True:
+                    msg = await websocket.receive_json()
+                    await helper_ws.send(json.dumps(msg))
+
+            await asyncio.gather(forward_helper_to_browser(), forward_browser_to_helper())
+    except Exception as exc:  # pragma: no cover - depends on remote helper availability
+        await websocket.send_json({"type": "output", "data": f"\r\n[remote helper error: {exc}]\r\n"})
+        await websocket.close()
+
+
 @app.websocket("/ws/term/{session_id}")
 async def ws_term(websocket: WebSocket, session_id: str) -> None:
     if not _origin_allowed(websocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    if session_id not in _sessions:
+    if session_id not in _sessions and session_id not in _session_output:
         await websocket.send_json({"type": "output", "data": "\r\n[session not found]\r\n"})
         await websocket.close()
         return
+
+    if _session_transport.get(session_id) == "remote":
+        await _proxy_remote_terminal(websocket, session_id)
+        return
+
     # Register before replaying the buffer so no output that arrives during
     # the replay itself can be missed.
     _term_clients.setdefault(session_id, set()).add(websocket)
