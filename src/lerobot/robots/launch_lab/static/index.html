@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LeRobot Launch Lab</title>
+<link rel="stylesheet" href="/vendor/xterm.css" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <img src="/img/logo.png" alt="" class="brand-logo" />
+      <div class="brand-text">
+        <div class="brand-title">LeRobot Launch Lab</div>
+        <div class="brand-rank" id="rank-label">Rookie Roboticist</div>
+      </div>
+    </div>
+
+    <div class="xp-block">
+      <div class="xp-row">
+        <span id="xp-label">0 XP</span>
+        <span id="progress-label">0 / 8 quests</span>
+      </div>
+      <div class="xp-bar-track">
+        <div class="xp-bar-fill" id="xp-bar-fill"></div>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <a id="view-3d-btn" class="btn btn-ghost" href="http://localhost:8000/viewer.html" target="_blank" rel="noopener">
+        <span class="icon" data-icon="cube"></span> View 3D
+      </a>
+      <span class="conn-dot" id="conn-dot" title="connecting..."></span>
+    </div>
+  </header>
+
+  <main class="stage">
+
+    <section id="view-map" class="view view-map">
+      <div class="quest-path" id="quest-path"></div>
+    </section>
+
+    <section id="view-level" class="view view-level hidden">
+      <button class="btn btn-ghost back-btn" id="back-btn">&larr; Quest Map</button>
+
+      <div class="level-head">
+        <div class="level-kicker" id="level-kicker">LEVEL</div>
+        <h1 id="level-title">Level title</h1>
+        <p id="level-subtitle" class="level-subtitle"></p>
+      </div>
+
+      <div class="level-body">
+        <div class="level-panel" id="level-panel"><!-- injected per-level controls --></div>
+
+        <div class="term-panel">
+          <div class="term-header">
+            <span class="term-dot" id="term-dot"></span>
+            <span class="term-title">LIVE TERMINAL</span>
+            <span class="term-hint">type directly into it — arrow keys, Ctrl-C, sudo prompts all work</span>
+            <button class="btn btn-stop hidden" id="stop-btn">■ Stop</button>
+          </div>
+          <div id="terminal" class="terminal"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast-root" class="toast-root"></div>
+<canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

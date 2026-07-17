@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LeRobot Setup Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101317; overflow: hidden; font-family: system-ui, sans-serif; }
+  #scene { position: absolute; inset: 0; }
+  #hud {
+    position: absolute; top: 16px; left: 16px; z-index: 2;
+    background: rgba(20, 24, 30, 0.78); border: 1px solid #2c333d; border-radius: 10px;
+    padding: 14px 18px; color: #e6e9ee; min-width: 190px;
+  }
+  #hud h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #8fa2b8; }
+  .level { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 3px 0; color: #6b7684; }
+  .level.done { color: #7ee787; }
+  .level .dot { width: 9px; height: 9px; border-radius: 50%; background: #3a4250; flex: none; }
+  .level.done .dot { background: #2ea043; box-shadow: 0 0 6px #2ea043; }
+  #status { position: absolute; bottom: 12px; left: 16px; z-index: 2; font-size: 12px; color: #6b7684; }
+  #status.connected { color: #7ee787; }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="hud">
+  <h1>Setup Progress</h1>
+  <div class="level" data-level="install"><span class="dot"></span>Install</div>
+  <div class="level" data-level="find_ports"><span class="dot"></span>Find Ports</div>
+  <div class="level" data-level="set_motor_ids"><span class="dot"></span>Set Motor IDs</div>
+  <div class="level" data-level="calibrate"><span class="dot"></span>Calibrate</div>
+  <div class="level" data-level="teleoperate"><span class="dot"></span>Teleoperate</div>
+</div>
+<div id="status">connecting to ws://localhost:8765 ...</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+
+// ── Scene setup ──────────────────────────────────────────────
+const container = document.getElementById("scene");
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101317);
+
+// camera/controls targets are set for real once the arm's bounding box is known, below
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x22262e, 1.1));
+const key = new THREE.DirectionalLight(0xffffff, 0.75);
+key.position.set(2, 3, 2);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.radius = 3; // soft-shadow blur, per the studio-lighting appearance spec
+scene.add(key);
+
+const grid = new THREE.GridHelper(6, 24, 0x2c333d, 0x1c2128);
+scene.add(grid);
+
+const shadowCatcher = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 20),
+  new THREE.ShadowMaterial({ opacity: 0.35 })
+);
+shadowCatcher.rotation.x = -Math.PI / 2;
+shadowCatcher.receiveShadow = true;
+scene.add(shadowCatcher);
+
+// ── Kinematic chain, matched to the real SO-101 follower arm ────────────────
+// Sourced directly from the URDF lerobot's own scripts reference for this robot:
+// https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
+// Each CHAIN entry is one joint's offset from its parent frame: `xyz` (meters)
+// and `rpy` (radians, URDF's fixed roll-pitch-yaw == Three.js Euler order "XYZ")
+// place the joint's frame; the joint then always rotates about its own local Z
+// axis, and `limits` are that joint's real range of motion (radians). Names
+// match lerobot's canonical motor names.
+const SCALE = 6; // meters -> scene units, chosen only for a comfortable camera framing
+
+// Product-matched finish palette (matte white body / matte-to-satin black
+// housings and brackets / brushed steel bearing), per the SO-101 appearance spec.
+// Purely cosmetic — no geometry, dimension, or joint value here is affected by it.
+const FINISHES = {
+  bodyWhite: { color: 0xf1f1ec, roughness: 0.85, metalness: 0.05 },     // matte white engineering plastic (structural links)
+  servoBlack: { color: 0x1c1e22, roughness: 0.5, metalness: 0.3 },      // black servo housing, subtle metallic finish
+  bracketBlack: { color: 0x202226, roughness: 0.45, metalness: 0.4 },   // satin black bracket / base
+  bearingSteel: { color: 0x8a8d92, roughness: 0.3, metalness: 0.75 },   // brushed steel bearing (wrist roll)
+  connectorBlack: { color: 0x141518, roughness: 0.6, metalness: 0.15 }, // black engineering plastic (gripper)
+};
+
+const CHAIN = [
+  { name: "shoulder_pan",  xyz: [0.0388, 0, 0.0624],         rpy: [Math.PI, 0, -Math.PI],          limits: [-1.91986, 1.91986] },
+  { name: "shoulder_lift", xyz: [-0.0304, -0.0183, -0.0542], rpy: [-Math.PI / 2, -Math.PI / 2, 0],  limits: [-1.74533, 1.74533] },
+  { name: "elbow_flex",    xyz: [-0.1126, -0.028, 0],        rpy: [0, 0, Math.PI / 2],              limits: [-1.69, 1.69] },
+  { name: "wrist_flex",    xyz: [-0.1349, 0.0052, 0],        rpy: [0, 0, -Math.PI / 2],             limits: [-1.65806, 1.65806] },
+  { name: "wrist_roll",    xyz: [0, -0.0611, 0.0181],        rpy: [Math.PI / 2, 0.0487, Math.PI],   limits: [-2.74385, 2.84121] },
+  { name: "gripper",       xyz: [0.0202, 0.0188, -0.0234],   rpy: [Math.PI / 2, 0, 0],              limits: [-0.174533, 1.74533] },
+];
+
+// Real SO-101 meshes (one entry per URDF <link>, keyed by the joint whose
+// rotation that link sits after — "base" is the one link with no parent joint).
+// Each mesh's own xyz/rpy is its local placement within that link's frame, taken
+// verbatim from the URDF's <visual><origin> for that mesh — this is what makes
+// every part seat correctly instead of needing hand-guessed offsets.
+const MESH_DIR = "meshes/";
+const LINK_MESHES = {
+  base: [
+    { file: "base_motor_holder_so101_v1.stl", xyz: [-0.00636471, -9.94414e-5, -0.0024], rpy: [1.5708, -1.67685e-15, 1.5708], finish: FINISHES.bracketBlack },
+    { file: "base_so101_v2.stl", xyz: [-0.00636471, -8.97657e-9, -0.0024], rpy: [1.5708, -2.78073e-29, 1.5708], finish: FINISHES.bodyWhite },
+    { file: "sts3215_03a_v1.stl", xyz: [0.0263353, -8.97657e-9, 0.0437], rpy: [-8.21148e-16, 7.84513e-18, 1.249e-15], finish: FINISHES.servoBlack },
+    { file: "waveshare_mounting_plate_so101_v2.stl", xyz: [-0.0309827, -1.99441e-4, 0.0474], rpy: [1.5708, -1.35493e-14, 1.5708], finish: FINISHES.bracketBlack },
+  ],
+  shoulder_pan: [ // shoulder_link
+    { file: "sts3215_03a_v1.stl", xyz: [-0.0303992, 4.22241e-4, -0.0417], rpy: [1.5708, 1.5708, 0], finish: FINISHES.servoBlack },
+    { file: "motor_holder_so101_base_v1.stl", xyz: [-0.0675992, -1.77759e-4, 0.0158499], rpy: [1.5708, -1.5708, 0], finish: FINISHES.bracketBlack },
+    { file: "rotation_pitch_so101_v1.stl", xyz: [0.0122008, 2.22413e-5, 0.0464], rpy: [-1.5708, 2.35221e-33, 0], finish: FINISHES.bodyWhite },
+  ],
+  shoulder_lift: [ // upper_arm_link
+    { file: "sts3215_03a_v1.stl", xyz: [-0.11257, -0.0155, 0.0187], rpy: [-3.14159, -5.27356e-16, -1.5708], finish: FINISHES.servoBlack },
+    { file: "upper_arm_so101_v1.stl", xyz: [-0.065085, 0.012, 0.0182], rpy: [3.14159, 0, 0], finish: FINISHES.bodyWhite },
+  ],
+  elbow_flex: [ // lower_arm_link
+    { file: "under_arm_so101_v1.stl", xyz: [-0.0648499, -0.032, 0.0182], rpy: [3.14159, 0, 0], finish: FINISHES.bodyWhite },
+    { file: "motor_holder_so101_wrist_v1.stl", xyz: [-0.0648499, -0.032, 0.018], rpy: [-3.14159, -2.55351e-15, 0], finish: FINISHES.bracketBlack },
+    { file: "sts3215_03a_v1.stl", xyz: [-0.1224, 0.0052, 0.0187], rpy: [-3.14159, 0, -3.14159], finish: FINISHES.servoBlack },
+  ],
+  wrist_flex: [ // wrist_link
+    { file: "sts3215_03a_no_horn_v1.stl", xyz: [8.32667e-17, -0.0424, 0.0306], rpy: [1.5708, 1.5708, 0], finish: FINISHES.servoBlack },
+    { file: "wrist_roll_pitch_so101_v2.stl", xyz: [0, -0.028, 0.0181], rpy: [-1.5708, -1.5708, 0], finish: FINISHES.bodyWhite },
+  ],
+  wrist_roll: [ // gripper_link
+    { file: "sts3215_03a_v1.stl", xyz: [0.0077, 1e-4, -0.0234], rpy: [-1.5708, -5.19179e-17, 0], finish: FINISHES.servoBlack },
+    { file: "wrist_roll_follower_so101_v1.stl", xyz: [8.32667e-17, -2.18214e-4, 9.49706e-4], rpy: [-3.14159, 0, 0], finish: FINISHES.bearingSteel },
+  ],
+  gripper: [ // moving_jaw_so101_v1_link
+    { file: "moving_jaw_so101_v1.stl", xyz: [-5.55112e-17, -5.55112e-17, 0.0189], rpy: [0, 0, 0], finish: FINISHES.connectorBlack },
+  ],
+};
+
+const stlLoader = new STLLoader();
+const joints = {};      // name -> THREE.Group to rotate (about local Z) for that joint's angle
+const linkGroups = {};  // name -> THREE.Group holding that link's real mesh part(s); flash target
+const jointLimits = {}; // name -> [lower, upper] radians
+
+function loadLinkMeshes(key, parentGroup) {
+  const group = new THREE.Group();
+  parentGroup.add(group);
+  linkGroups[key] = group;
+
+  const defs = LINK_MESHES[key] || [];
+  return Promise.all(defs.map((def) => new Promise((resolve) => {
+    stlLoader.load(
+      MESH_DIR + def.file,
+      (geometry) => {
+        geometry.computeVertexNormals();
+        const mat = new THREE.MeshStandardMaterial({
+          color: def.finish.color, roughness: def.finish.roughness, metalness: def.finish.metalness,
+        });
+        const mesh = new THREE.Mesh(geometry, mat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.position.set(def.xyz[0] * SCALE, def.xyz[1] * SCALE, def.xyz[2] * SCALE);
+        mesh.rotation.set(def.rpy[0], def.rpy[1], def.rpy[2], "XYZ");
+        mesh.scale.setScalar(SCALE);
+        group.add(mesh);
+        resolve();
+      },
+      undefined,
+      (err) => {
+        console.error(`Failed to load mesh ${def.file}:`, err);
+        resolve(); // don't block the other parts on one failed load
+      }
+    );
+  })));
+}
+
+const base = new THREE.Group();
+scene.add(base);
+const loadPromises = [loadLinkMeshes("base", base)];
+linkGroups["all"] = base; // "all" flashes the whole robot for whole-robot events
+
+let parent = base;
+for (let i = 0; i < CHAIN.length; i++) {
+  const { name, xyz, rpy, limits } = CHAIN[i];
+
+  const originFrame = new THREE.Group();
+  originFrame.position.set(xyz[0] * SCALE, xyz[1] * SCALE, xyz[2] * SCALE);
+  originFrame.rotation.set(rpy[0], rpy[1], rpy[2], "XYZ");
+  parent.add(originFrame);
+
+  const jointFrame = new THREE.Group();
+  originFrame.add(jointFrame);
+  joints[name] = jointFrame;
+  jointLimits[name] = limits;
+
+  loadPromises.push(loadLinkMeshes(name, jointFrame));
+  parent = jointFrame;
+}
+
+// The real URDF's zero-angle pose isn't a tidy "arm standing upright" shape —
+// it's whatever configuration the physical joints' zero encoder ticks land on —
+// so auto-frame the camera/grid from the model's actual bounding box (computed
+// once every mesh has finished loading) rather than assuming a shape.
+Promise.all(loadPromises).then(() => {
+  base.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(base);
+  const boundsCenter = bounds.getCenter(new THREE.Vector3());
+  const boundsSize = bounds.getSize(new THREE.Vector3());
+  const maxDim = Math.max(boundsSize.x, boundsSize.y, boundsSize.z, 0.5);
+  grid.position.y = bounds.min.y;
+  shadowCatcher.position.set(boundsCenter.x, bounds.min.y + 0.001, boundsCenter.z);
+  key.shadow.camera.left = -maxDim * 1.5;
+  key.shadow.camera.right = maxDim * 1.5;
+  key.shadow.camera.top = maxDim * 1.5;
+  key.shadow.camera.bottom = -maxDim * 1.5;
+  key.shadow.camera.updateProjectionMatrix();
+  controls.target.copy(boundsCenter);
+  camera.position.set(
+    boundsCenter.x + maxDim * 0.9,
+    boundsCenter.y + maxDim * 0.7,
+    boundsCenter.z + maxDim * 1.0
+  );
+  camera.lookAt(boundsCenter);
+});
+
+const targetAngle = {}; // name -> radians
+
+function setJointAngleDegrees(name, degrees) {
+  if (!joints[name]) return;
+  const [lower, upper] = jointLimits[name];
+  targetAngle[name] = THREE.MathUtils.clamp(THREE.MathUtils.degToRad(degrees), lower, upper);
+}
+
+function flashJoint(name) {
+  const group = linkGroups[name] || linkGroups["all"];
+  if (!group) return;
+  const originals = [];
+  group.traverse((obj) => {
+    if (obj.isMesh) {
+      originals.push([obj.material, obj.material.emissive.clone()]);
+      obj.material.emissive.set(0x2ea043);
+    }
+  });
+  let t = 0;
+  const fade = () => {
+    t += 0.04;
+    for (const [mat, original] of originals) {
+      mat.emissive.lerpColors(new THREE.Color(0x2ea043), original, Math.min(t, 1));
+    }
+    if (t < 1) requestAnimationFrame(fade);
+  };
+  requestAnimationFrame(fade);
+}
+
+// ── HUD ──────────────────────────────────────────────────────
+function markLevelDone(level) {
+  const el = document.querySelector(`.level[data-level="${level}"]`);
+  if (el) el.classList.add("done");
+}
+
+// ── WebSocket ────────────────────────────────────────────────
+const statusEl = document.getElementById("status");
+
+function connect() {
+  const ws = new WebSocket("ws://localhost:8765");
+  ws.onopen = () => {
+    statusEl.textContent = "connected to ws://localhost:8765";
+    statusEl.classList.add("connected");
+  };
+  ws.onclose = () => {
+    statusEl.textContent = "disconnected — retrying...";
+    statusEl.classList.remove("connected");
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (evt) => {
+    let msg;
+    try {
+      msg = JSON.parse(evt.data);
+    } catch {
+      return;
+    }
+    if (msg.event === "level_complete") {
+      markLevelDone(msg.level);
+      flashJoint(msg.joint || "all");
+    } else if (typeof msg.joint === "string" && typeof msg.angle === "number") {
+      setJointAngleDegrees(msg.joint, msg.angle);
+    }
+  };
+}
+connect();
+
+// ── Render loop ──────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  for (const [name, group] of Object.entries(joints)) {
+    const target = targetAngle[name] ?? 0;
+    group.rotation.z += (target - group.rotation.z) * 0.15;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "hosting": {
+    "public": "src/lerobot/robots/launch_lab/static",
+    "ignore": ["firebase.json", "**/.*", "**/__pycache__/**"],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
+    ]
+  }
+}
