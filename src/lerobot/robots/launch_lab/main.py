@@ -40,6 +40,13 @@ def main() -> None:
     from lerobot.robots.launch_lab.server import app, state
 
     host, port = resolve_host_and_port()
+    # 0.0.0.0 (and ::) are wildcard BIND addresses -- correct for uvicorn (accept
+    # connections on every interface), but not a real destination a browser can
+    # connect to. Windows browsers reliably refuse to load http://0.0.0.0:PORT/
+    # ("this site can't be reached"); some Linux browsers happen to route it to
+    # localhost, which is why this only showed up on Windows. Always point the
+    # browser at a real loopback address regardless of what the server bound to.
+    browser_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 
     try:
         from lerobot.robots.viewer_bridge import ViewerBridge
@@ -54,7 +61,7 @@ def main() -> None:
 
         def _open_browser() -> None:
             time.sleep(0.8)
-            webbrowser.open(f"http://{host}:{port}/")
+            webbrowser.open(f"http://{browser_host}:{port}/")
 
         threading.Thread(target=_open_browser, daemon=True).start()
 
