@@ -47,8 +47,17 @@
           software, reads your USB ports, and prompts for sudo, none of which a hosted
           page can do on your behalf. This page is just the entry point.
         </p>
-        <p>1. Open a terminal on the machine your robot is plugged into and paste this (installs everything needed, then starts it -- first run downloads a few GB, be patient):</p>
+        <p>1. Open a terminal on the machine your robot is plugged into, pick your OS, and paste the command (installs everything needed, then starts it -- first run downloads a few GB, be patient):</p>
+        <div class="arm-tabs" style="margin-bottom: 8px;">
+          <div class="arm-tab follower selected" id="launcher-tab-mac" data-cmd="curl -fsSL https://pearllelab.web.app/install.sh | bash">macOS / Linux</div>
+          <div class="arm-tab leader" id="launcher-tab-win" data-cmd="irm https://pearllelab.web.app/install.ps1 | iex">Windows</div>
+        </div>
         <pre style="background: var(--bg2, #0d1420); padding: 10px; border-radius: 6px; overflow-x: auto;"><code id="launcher-cmd">curl -fsSL https://pearllelab.web.app/install.sh | bash</code></pre>
+        <p id="launcher-win-note" class="hint-card hidden" style="font-size: 0.85em;">
+          Windows note: this runs the app inside WSL (Windows Subsystem for Linux) --
+          real terminal/USB access needs it. First time on this PC, it may ask you to
+          restart once and re-run the same command; after that it's one step.
+        </p>
         <p>2. It'll open automatically once ready. Already installed? Just click below:</p>
         <a id="launcher-link" class="btn btn-primary btn-block" href="#">Open Launch Lab on this computer</a>
         <p class="hint-card" style="margin-top: 14px; font-size: 0.85em;">

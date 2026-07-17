@@ -587,6 +587,22 @@ function showLauncher() {
   $("#view-launcher").classList.remove("hidden");
   $("#view-map").classList.add("hidden");
   $("#launcher-link").href = `http://${LOCAL_HELPER_HOST}/`;
+
+  const macTab = $("#launcher-tab-mac");
+  const winTab = $("#launcher-tab-win");
+  const cmdEl = $("#launcher-cmd");
+  const winNote = $("#launcher-win-note");
+  function selectLauncherTab(tab) {
+    const isWin = tab === winTab;
+    macTab.classList.toggle("selected", !isWin);
+    winTab.classList.toggle("selected", isWin);
+    cmdEl.textContent = tab.getAttribute("data-cmd");
+    winNote.classList.toggle("hidden", !isWin);
+  }
+  macTab.addEventListener("click", () => selectLauncherTab(macTab));
+  winTab.addEventListener("click", () => selectLauncherTab(winTab));
+  const isWindows = /win/i.test(navigator.platform || navigator.userAgent || "");
+  selectLauncherTab(isWindows ? winTab : macTab);
 }
 
 async function init() {
