@@ -11,10 +11,18 @@ import shutil
 import sys
 from pathlib import Path
 
+IS_WINDOWS = sys.platform == "win32"
+
 # .../<repo_root>/src/lerobot/robots/launch_lab/commands.py -- derived from this file's
 # own location (not hardcoded) so installs work from wherever the repo was cloned, both
 # for other users and for the differently-pathed checkout Render builds from.
 REPO_ROOT = str(Path(__file__).resolve().parents[4])
+
+# Placeholder ports shown before a real one is detected via Find Ports -- Linux/macOS
+# expose serial devices as /dev/ttyACM*, Windows as COM* (COM3/COM4 are the common
+# first-two-devices default, not guaranteed; Find Ports always overrides these).
+DEFAULT_FOLLOWER_PORT = "COM3" if IS_WINDOWS else "/dev/ttyACM0"
+DEFAULT_LEADER_PORT = "COM4" if IS_WINDOWS else "/dev/ttyACM1"
 
 
 def _installed(dist_name: str) -> bool:
@@ -33,39 +41,58 @@ def install_steps() -> list[dict]:
     called (used for both the initial check and "Re-check").
     """
     py = sys.executable
+    # Quoting: single-quoted on POSIX (bash), double-quoted on Windows (PowerShell) --
+    # each shell's own string-literal syntax for a path that may contain spaces.
+    pip_quote = '"{}"' if IS_WINDOWS else "'{}'"
+
+    def pip_install(extra: str) -> str:
+        return f"{py} -m pip install -e {pip_quote.format(REPO_ROOT + '[' + extra + ']')}"
+
+    if IS_WINDOWS:
+        git_lfs_cmd = (
+            "if (-not (Get-Command git-lfs -ErrorAction SilentlyContinue)) "
+            "{ winget install -e --id GitHub.GitLFS --silent --accept-package-agreements --accept-source-agreements }\n"
+            "git lfs install\n"
+            "git lfs pull"
+        )
+        ffmpeg_cmd = (
+            "if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) "
+            "{ winget install -e --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements }"
+        )
+    else:
+        git_lfs_cmd = "which git-lfs >/dev/null 2>&1 || sudo apt-get install -y git-lfs; git lfs install && git lfs pull"
+        ffmpeg_cmd = "which ffmpeg >/dev/null 2>&1 || sudo apt-get install -y ffmpeg"
+
     return [
         {
             "key": "feetech",
             "label": "Motor SDK -- lerobot[feetech]",
             "already_installed": _installed("feetech-servo-sdk"),
-            "cmd": f"{py} -m pip install -e '{REPO_ROOT}[feetech]'",
+            "cmd": pip_install("feetech"),
         },
         {
             "key": "core_scripts",
             "label": "Robot workflows -- lerobot[core_scripts] (record/replay/calibrate/teleoperate)",
             "already_installed": _installed("rerun-sdk") and _installed("datasets"),
-            "cmd": f"{py} -m pip install -e '{REPO_ROOT}[core_scripts]'",
+            "cmd": pip_install("core_scripts"),
         },
         {
             "key": "training",
             "label": "Training stack -- lerobot[training] (accelerate + wandb)",
             "already_installed": _installed("accelerate") and _installed("wandb"),
-            "cmd": f"{py} -m pip install -e '{REPO_ROOT}[training]'",
+            "cmd": pip_install("training"),
         },
         {
             "key": "git_lfs",
             "label": "Git LFS assets",
             "already_installed": shutil.which("git-lfs") is not None,
-            "cmd": (
-                "which git-lfs >/dev/null 2>&1 || sudo apt-get install -y git-lfs; "
-                "git lfs install && git lfs pull"
-            ),
+            "cmd": git_lfs_cmd,
         },
         {
             "key": "ffmpeg",
             "label": "ffmpeg (video decoding)",
             "already_installed": shutil.which("ffmpeg") is not None,
-            "cmd": "which ffmpeg >/dev/null 2>&1 || sudo apt-get install -y ffmpeg",
+            "cmd": ffmpeg_cmd,
         },
     ]
 
@@ -86,16 +113,28 @@ def find_cameras_cmd() -> str:
     return "lerobot-find-cameras"
 
 
+def _maybe_sudo(binary: str) -> str:
+    """On POSIX, resolve the full path via the invoking user's PATH and prefix with
+    sudo -- `sudo <name>` alone can fail with "command not found" if the binary only
+    exists in a user-local venv not on root's PATH. Windows needs neither: opening a
+    COM port doesn't require elevation, and there's no portable `sudo` equivalent."""
+    if IS_WINDOWS:
+        return binary
+    return f"sudo $(which {binary})"
+
+
 def setup_motors_cmd(arm: str, port: str) -> str:
+    binary = _maybe_sudo("lerobot-setup-motors")
     if arm == "follower":
-        return f"sudo $(which lerobot-setup-motors) --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"sudo $(which lerobot-setup-motors) --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def calibrate_cmd(arm: str, port: str) -> str:
+    binary = _maybe_sudo("lerobot-calibrate")
     if arm == "follower":
-        return f"sudo $(which lerobot-calibrate) --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"sudo $(which lerobot-calibrate) --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def camera_spec(cameras: list[dict]) -> str:

@@ -6,16 +6,38 @@ and so keystrokes typed in the browser -- including arrow keys and Ctrl-C --
 reach the child process exactly as they would in a real terminal. This is
 what lets interactive flows like `lerobot-record` (arrow-key episode
 controls) and `lerobot-calibrate` (Enter-driven prompts) work from the app.
+
+Two backends, chosen at import time by platform:
+  - POSIX (Linux/macOS): `ptyprocess`, wrapping a real POSIX pty via
+    fcntl/pty/termios. Spawns `bash -lc <cmd>` directly.
+  - Windows: `pywinpty`, wrapping ConPTY (Windows' native pseudo-console API,
+    added in Windows 10 1809+). `ptyprocess` cannot be imported on Windows at
+    all -- it hard-imports fcntl/pty/termios/resource, none of which exist
+    outside POSIX -- so the import itself is platform-gated below, not just
+    the usage.
+
+The Windows path is written from documented pywinpty behavior but has not
+been run on an actual Windows machine (none available in this environment);
+treat it as needing real verification before relying on it.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import sys
+import tempfile
 import threading
+import uuid
 from collections.abc import Callable
+from pathlib import Path
 
-import ptyprocess
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    import winpty  # pywinpty; only installed on Windows (see pyproject.toml)
+else:
+    import ptyprocess
 
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\r")
 
@@ -49,21 +71,36 @@ class PtySession:
         self.on_output = on_output
         self.on_line = on_line
         self.on_exit = on_exit
-        self._proc: ptyprocess.PtyProcess | None = None
+        self._proc = None
         self._reader_thread: threading.Thread | None = None
         self._line_buf = ""
         self._stopped = False
+        self._script_path: Path | None = None
 
     def start(self) -> None:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "xterm-256color"
-        self._proc = ptyprocess.PtyProcess.spawn(
-            ["bash", "-lc", self.cmd],
-            cwd=self.cwd,
-            env=env,
-            dimensions=(30, 100),
-        )
+        if IS_WINDOWS:
+            # A temp .ps1 file sidesteps Windows/PowerShell command-line quoting
+            # entirely -- `self.cmd` can contain arbitrary quotes (e.g. the embedded
+            # YAML-ish --robot.cameras="{...}" dict) without needing to be re-escaped
+            # for a second layer of shell parsing.
+            self._script_path = Path(tempfile.gettempdir()) / f"launch_lab_{uuid.uuid4().hex[:8]}.ps1"
+            self._script_path.write_text(self.cmd, encoding="utf-8")
+            self._proc = winpty.PtyProcess.spawn(
+                f'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{self._script_path}"',
+                cwd=self.cwd,
+                env=env,
+                dimensions=(30, 100),
+            )
+        else:
+            self._proc = ptyprocess.PtyProcess.spawn(
+                ["bash", "-lc", self.cmd],
+                cwd=self.cwd,
+                env=env,
+                dimensions=(30, 100),
+            )
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
 
@@ -89,8 +126,16 @@ class PtySession:
                 exit_code = self._proc.exitstatus or 0
             except Exception:
                 exit_code = 1
+            self._cleanup_script()
             if self.on_exit and not self._stopped:
                 self.on_exit(exit_code)
+
+    def _cleanup_script(self) -> None:
+        if self._script_path is not None:
+            try:
+                self._script_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _feed_lines(self, data: bytes) -> None:
         self._line_buf += strip_ansi(data)
@@ -102,7 +147,10 @@ class PtySession:
 
     def write(self, data: bytes) -> None:
         if self._proc is not None and self._proc.isalive():
-            self._proc.write(data)
+            # pywinpty's PTY is text-mode (ConPTY deals in text, not raw bytes);
+            # ptyprocess's is byte-mode. The public interface here stays bytes-in
+            # either way since that's what the browser's WebSocket payloads are.
+            self._proc.write(data.decode("utf-8", errors="replace") if IS_WINDOWS else data)
 
     def resize(self, rows: int, cols: int) -> None:
         if self._proc is not None and self._proc.isalive():
@@ -115,7 +163,13 @@ class PtySession:
         """Send Ctrl-C (SIGINT) to the foreground process, like a real terminal."""
         if self._proc is not None and self._proc.isalive():
             try:
-                self._proc.sendintr()
+                if IS_WINDOWS:
+                    # ConPTY has no sendintr() equivalent exposed by pywinpty; writing
+                    # the raw ETX byte is what a real terminal sends on Ctrl-C, and
+                    # ConPTY translates it into the appropriate console control event.
+                    self._proc.write("\x03")
+                else:
+                    self._proc.sendintr()
             except Exception:
                 pass
 
@@ -125,8 +179,11 @@ class PtySession:
         if self._proc is not None and self._proc.isalive():
             try:
                 self._proc.terminate(force=True)
+            except TypeError:
+                self._proc.terminate()
             except Exception:
                 pass
+        self._cleanup_script()
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.isalive()

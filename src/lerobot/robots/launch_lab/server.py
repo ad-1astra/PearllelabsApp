@@ -412,7 +412,7 @@ def run_action(req: RunRequest) -> dict:
 
     if action == "calibrate":
         arm = p["arm"]
-        port = state.found_ports.get(arm, "") or ("/dev/ttyACM0" if arm == "follower" else "/dev/ttyACM1")
+        port = state.found_ports.get(arm, "") or (commands.DEFAULT_FOLLOWER_PORT if arm == "follower" else commands.DEFAULT_LEADER_PORT)
         cmd = commands.calibrate_cmd(arm, port)
         return {
             "session_id": _start_session(
@@ -422,8 +422,8 @@ def run_action(req: RunRequest) -> dict:
 
     if action == "teleoperate":
         cmd = commands.teleoperate_cmd(
-            state.found_ports.get("follower", "/dev/ttyACM0"),
-            state.found_ports.get("leader", "/dev/ttyACM1"),
+            state.found_ports.get("follower", commands.DEFAULT_FOLLOWER_PORT),
+            state.found_ports.get("leader", commands.DEFAULT_LEADER_PORT),
             p.get("cameras", []),
         )
         return {
@@ -435,8 +435,8 @@ def run_action(req: RunRequest) -> dict:
     if action == "record":
         repo_id = p["repo_id"]
         cmd = commands.record_cmd(
-            state.found_ports.get("follower", "/dev/ttyACM0"),
-            state.found_ports.get("leader", "/dev/ttyACM1"),
+            state.found_ports.get("follower", commands.DEFAULT_FOLLOWER_PORT),
+            state.found_ports.get("leader", commands.DEFAULT_LEADER_PORT),
             p.get("cameras", []),
             repo_id,
             p.get("task", ""),
@@ -454,7 +454,7 @@ def run_action(req: RunRequest) -> dict:
 
     if action == "replay":
         cmd = commands.replay_cmd(
-            state.found_ports.get("follower", "/dev/ttyACM0"), p["repo_id"], int(p.get("episode", 0))
+            state.found_ports.get("follower", commands.DEFAULT_FOLLOWER_PORT), p["repo_id"], int(p.get("episode", 0))
         )
         return {"session_id": _start_session("replay", cmd)}
 
@@ -481,7 +481,7 @@ def run_action(req: RunRequest) -> dict:
 
     if action == "eval_record":
         cmd = commands.eval_record_cmd(
-            state.found_ports.get("follower", "/dev/ttyACM0"),
+            state.found_ports.get("follower", commands.DEFAULT_FOLLOWER_PORT),
             p.get("cameras", []),
             p["repo_id"],
             p.get("task", ""),
@@ -569,6 +569,8 @@ def _strip_install_markers(text: str) -> str:
 
 
 def _build_install_script(steps: list[dict]) -> str:
+    if commands.IS_WINDOWS:
+        return _build_install_script_windows(steps)
     parts = []
     for step in steps:
         key = step["key"]
@@ -584,6 +586,33 @@ def _build_install_script(steps: list[dict]) -> str:
                 f'echo "@@INSTALL:{key}:exit:$code@@ {label} -- failed (exit $code)"; fi'
             )
     return " ; ".join(parts) if parts else "echo 'Nothing to install -- everything is ready.'"
+
+
+def _build_install_script_windows(steps: list[dict]) -> str:
+    """PowerShell equivalent of `_build_install_script`.
+
+    Joined with newlines (this becomes the body of a temp .ps1 file, see
+    pty_session.py) rather than `;` since each step's own cmd may already be a
+    multi-line block (winget install steps use `if (...) { ... }`).
+    $LASTEXITCODE is PowerShell's exit-code-of-the-last-external-command variable
+    ($? is a success/fail bool, not a code) -- accurate when a step's last action is
+    directly invoking pip/winget/git, which is the case for every step here.
+    """
+    lines = []
+    for step in steps:
+        key = step["key"]
+        label = step["label"]
+        if step["already_installed"]:
+            lines.append(f"Write-Host '@@INSTALL:{key}:skip@@ {label} -- already installed'")
+        else:
+            lines.append(f"Write-Host '@@INSTALL:{key}:start@@ Installing {label}...'")
+            lines.append(step["cmd"])
+            lines.append(
+                f"$code = $LASTEXITCODE\n"
+                f'if ($code -eq 0) {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- done" }} '
+                f'else {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- failed (exit $code)" }}'
+            )
+    return "\n".join(lines) if lines else "Write-Host 'Nothing to install -- everything is ready.'"
 
 
 def _start_install_session() -> str:

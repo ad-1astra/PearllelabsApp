@@ -1,56 +1,59 @@
-# LeRobot Launch Lab -- Windows installer.
+# LeRobot Launch Lab -- native Windows installer (no WSL).
 #
 # Run in PowerShell with:
 #   irm https://pearllelab.web.app/install.ps1 | iex
 #
-# Why WSL: the local helper runs real PTY sessions (fcntl/pty/termios), which are
-# POSIX-only and don't exist on native Windows Python. WSL (Windows Subsystem for
-# Linux) gives a real Linux environment, so the exact same, already-working Linux
-# install path runs unchanged inside it -- rewriting the PTY/shell layer for native
-# Windows would be a much larger, currently-unverified undertaking.
+# What this does:
+#   1. Installs `uv` (Python package/version manager) if it's not already present.
+#   2. Clones (or updates) the app into $HOME\lerobot-launch-lab.
+#   3. Installs dependencies (pulling in pywinpty, the Windows PTY backend, instead
+#      of the POSIX-only ptyprocess) and starts the local helper.
 #
-# WSL2 forwards ports bound inside it to Windows' own localhost automatically, so
-# once this finishes, http://127.0.0.1:8090 on your Windows browser reaches the app
-# exactly like a native install would.
+# Runs everything as your normal user -- no elevation needed for install/run.
+# Individual quest steps (git-lfs, ffmpeg) use winget, which may show its own
+# UAC prompt if a machine-wide install needs it; that's winget's prompt, not this
+# script's.
 #
-# Everything lives inside a function and uses `return`, not top-level `exit` --
-# this script runs via `iex` in the user's own PowerShell session, so a bare `exit`
-# would close their whole terminal window instead of just stopping the install.
-
-function Test-WslReady {
-    try {
-        $distros = wsl -l -q 2>$null
-        return ($LASTEXITCODE -eq 0) -and ($distros | Where-Object { $_.Trim() -ne "" })
-    } catch {
-        return $false
-    }
-}
+# Uses a function + `return` instead of top-level `exit`: this script runs via `iex`
+# inside your own PowerShell session, so a bare `exit` would close that whole window
+# instead of just stopping the install.
 
 function Install-LaunchLab {
-    Write-Host "== LeRobot Launch Lab installer (Windows / WSL) =="
+    $ErrorActionPreference = "Stop"
+    $repoUrl = "https://github.com/ad-1astra/PearllelabsApp.git"
+    $installDir = if ($env:LAUNCH_LAB_INSTALL_DIR) { $env:LAUNCH_LAB_INSTALL_DIR } else { "$HOME\lerobot-launch-lab" }
 
-    if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
-        Write-Host "WSL isn't available on this system. It needs Windows 10 version 2004+ or Windows 11."
-        Write-Host "Update Windows, then re-run this command."
+    Write-Host "== LeRobot Launch Lab installer (Windows) =="
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "git is required but wasn't found. Install it from https://git-scm.com/download/win, then re-run this command."
         return
     }
 
-    if (-not (Test-WslReady)) {
-        Write-Host "-- WSL isn't set up yet. Installing it now (this needs Administrator rights)..."
-        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-Host "Please re-run this from an Administrator PowerShell window (right-click PowerShell -> Run as administrator), then paste the same command again."
-            return
-        }
-        wsl --install -d Ubuntu
-        Write-Host ""
-        Write-Host "WSL is installed, but Windows needs a RESTART before it can be used for the first time."
-        Write-Host "Restart your computer, then run this same command again -- it'll pick up from here and finish in one step."
-        return
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Host "-- Installing uv (Python package manager)..."
+        irm https://astral.sh/uv/install.ps1 | iex
+        # The installer updates PATH for new sessions, but this one needs it now too.
+        $uvBin = "$HOME\.local\bin"
+        if (Test-Path $uvBin) { $env:Path = "$uvBin;$env:Path" }
     }
 
-    Write-Host "-- WSL is ready. Installing and starting Launch Lab inside it (first run downloads a few GB -- torch, opencv, etc. Grab a coffee.)..."
-    wsl bash -c "curl -fsSL https://pearllelab.web.app/install.sh | bash"
+    if (Test-Path "$installDir\.git") {
+        Write-Host "-- Updating existing install at $installDir..."
+        git -C $installDir pull --ff-only
+    } else {
+        Write-Host "-- Cloning into $installDir..."
+        git clone --depth 1 $repoUrl $installDir
+    }
+
+    Set-Location $installDir
+
+    Write-Host "-- Installing dependencies (first run downloads a few GB -- torch, opencv, etc. Grab a coffee.)"
+    uv sync --quiet
+
+    Write-Host "-- Starting Launch Lab..."
+    $env:LAUNCH_LAB_OPEN_BROWSER = "1"
+    uv run lerobot-launch-lab
 }
 
 Install-LaunchLab
