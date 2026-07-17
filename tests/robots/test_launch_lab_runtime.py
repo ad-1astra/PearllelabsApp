@@ -12,7 +12,7 @@ def test_runtime_defaults_come_from_environment(monkeypatch):
     host, port = launch_lab_main.resolve_host_and_port()
 
     assert host == "0.0.0.0"
-    assert port == 8000
+    assert port == 8090
 
 
 def test_runtime_prefers_explicit_environment_values(monkeypatch):
