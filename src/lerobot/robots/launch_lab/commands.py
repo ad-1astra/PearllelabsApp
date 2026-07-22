@@ -42,17 +42,18 @@ def install_steps() -> list[dict]:
     """
     py = sys.executable
     # Quoting: single-quoted on POSIX (bash), double-quoted on Windows (PowerShell) --
-    # each shell's own string-literal syntax for a path that may contain spaces.
-    # `py` itself needs the same treatment -- a Windows user profile path routinely has
-    # a space (e.g. C:\Users\Pearl Labs\...), which silently truncated the command to
-    # everything before the space when unquoted. PowerShell also requires the call
-    # operator `&` before a quoted string used as the command itself, or it's parsed as
-    # an expression to print, not something to execute.
-    py_invoke = f'& "{py}"' if IS_WINDOWS else py
-    pip_quote = '"{}"' if IS_WINDOWS else "'{}'"
+    # each shell's own string-literal syntax for a path that may contain spaces (a
+    # Windows user profile path routinely has one, e.g. C:\Users\Pearl Labs\...).
+    quote = '"{}"' if IS_WINDOWS else "'{}'"
 
     def pip_install(extra: str) -> str:
-        return f"{py_invoke} -m pip install -e {pip_quote.format(REPO_ROOT + '[' + extra + ']')}"
+        # `uv pip install`, not `{py} -m pip install`: venvs created by `uv sync`/
+        # `uv venv` don't include pip at all by default (uv is its own installer, not
+        # a pip wrapper) -- confirmed by testing an actual uv-created venv, where
+        # `python -m pip` fails with "No module named pip" even though the venv and
+        # its packages are otherwise completely normal. `--python` targets the exact
+        # interpreter this app is itself running under, same as the old command did.
+        return f"uv pip install --python {quote.format(py)} -e {quote.format(REPO_ROOT + '[' + extra + ']')}"
 
     if IS_WINDOWS:
         # --disable-interactivity suppresses winget's first-run "accept Microsoft
