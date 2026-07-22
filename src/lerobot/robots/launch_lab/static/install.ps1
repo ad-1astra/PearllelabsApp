@@ -66,7 +66,13 @@ function Install-LaunchLab {
 
     Write-Host "-- Starting Launch Lab..."
     $env:LAUNCH_LAB_OPEN_BROWSER = "1"
-    uv run lerobot-launch-lab
+    # `uv run lerobot-launch-lab` would run the generated .venv\Scripts\lerobot-
+    # launch-lab.exe wrapper directly -- Windows locks that file while it's running,
+    # so the in-app Install step's `uv pip install -e ...` (which regenerates that
+    # same wrapper on every reinstall) fails with "process cannot access the file...
+    # being used by another process". Running the module directly means the actual
+    # running process is python.exe, which isn't touched by reinstalling the package.
+    uv run python -m lerobot.robots.launch_lab.main
 }
 
 Install-LaunchLab
