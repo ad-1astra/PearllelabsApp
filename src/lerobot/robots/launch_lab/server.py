@@ -594,9 +594,13 @@ def _build_install_script_windows(steps: list[dict]) -> str:
     Joined with newlines (this becomes the body of a temp .ps1 file, see
     pty_session.py) rather than `;` since each step's own cmd may already be a
     multi-line block (winget install steps use `if (...) { ... }`).
-    $LASTEXITCODE is PowerShell's exit-code-of-the-last-external-command variable
-    ($? is a success/fail bool, not a code) -- accurate when a step's last action is
-    directly invoking pip/winget/git, which is the case for every step here.
+
+    Each step's `cmd` (see commands.py) sets `$__stepOk` explicitly at its own real
+    point of success/failure, rather than this reading $LASTEXITCODE afterwards --
+    that variable is only set by *external* processes, not cmdlets (Invoke-WebRequest,
+    Expand-Archive, etc used by the ffmpeg fallback), so a cmdlet-only step left it
+    holding an unrelated *earlier* step's leftover value, silently misreporting
+    success/failure by coincidence rather than by checking anything real.
     """
     lines = []
     for step in steps:
@@ -606,16 +610,11 @@ def _build_install_script_windows(steps: list[dict]) -> str:
             lines.append(f"Write-Host '@@INSTALL:{key}:skip@@ {label} -- already installed'")
         else:
             lines.append(f"Write-Host '@@INSTALL:{key}:start@@ Installing {label}...'")
+            lines.append("$__stepOk = $false")
             lines.append(step["cmd"])
             lines.append(
-                # $LASTEXITCODE stays $null (not 0/1) if the previous line was a
-                # PowerShell-level error -- e.g. "command not found" -- rather than an
-                # external process that actually ran and exited; without this it shows
-                # up as a blank "exit:@@" marker instead of a real code.
-                f"$code = $LASTEXITCODE\n"
-                f"if ($null -eq $code) {{ $code = 1 }}\n"
-                f'if ($code -eq 0) {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- done" }} '
-                f'else {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- failed (exit $code)" }}'
+                f'if ($__stepOk) {{ Write-Host "@@INSTALL:{key}:exit:0@@ {label} -- done" }} '
+                f'else {{ Write-Host "@@INSTALL:{key}:exit:1@@ {label} -- failed" }}'
             )
     return "\n".join(lines) if lines else "Write-Host 'Nothing to install -- everything is ready.'"
 

@@ -7,11 +7,13 @@ read, test, and cross-check against AGENT_GUIDE.md.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import shutil
 import sys
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+_WINDOWS_FFMPEG_FALLBACK_DIR = "lerobot-launch-lab/ffmpeg"  # under %LOCALAPPDATA%, see install_steps()
 
 # .../<repo_root>/src/lerobot/robots/launch_lab/commands.py -- derived from this file's
 # own location (not hardcoded) so installs work from wherever the repo was cloned, both
@@ -33,6 +35,30 @@ def _installed(dist_name: str) -> bool:
         return False
 
 
+def _sync_windows_ffmpeg_path() -> None:
+    """Make a successful Windows ffmpeg fallback download (see install_steps) visible
+    to this process, not just future ones.
+
+    That fallback downloads to a per-user AppData folder and updates PATH via
+    [Environment]::SetEnvironmentVariable -- which only affects processes started
+    *after* that point. This server process already took its own PATH snapshot at
+    startup, so without this, a real successful download still shows as "not
+    installed" forever (both in the Install screen's own re-check, and for every
+    later command this server spawns, e.g. record/teleoperate needing ffmpeg).
+    """
+    if not IS_WINDOWS or shutil.which("ffmpeg"):
+        return
+    base = Path(os.environ.get("LOCALAPPDATA", "")) / Path(_WINDOWS_FFMPEG_FALLBACK_DIR)
+    if not base.is_dir():
+        return
+    for exe in base.glob("ffmpeg-*/bin/ffmpeg.exe"):
+        bin_dir = str(exe.parent)
+        path = os.environ.get("PATH", "")
+        if bin_dir not in path.split(os.pathsep):
+            os.environ["PATH"] = bin_dir + os.pathsep + path
+        break
+
+
 def install_steps() -> list[dict]:
     """One entry per Install-level check, in run order.
 
@@ -40,6 +66,7 @@ def install_steps() -> list[dict]:
     when it isn't. `already_installed` is re-evaluated every time this is
     called (used for both the initial check and "Re-check").
     """
+    _sync_windows_ffmpeg_path()
     py = sys.executable
     # Quoting: single-quoted on POSIX (bash), double-quoted on Windows (PowerShell) --
     # each shell's own string-literal syntax for a path that may contain spaces (a
@@ -53,7 +80,10 @@ def install_steps() -> list[dict]:
         # `python -m pip` fails with "No module named pip" even though the venv and
         # its packages are otherwise completely normal. `--python` targets the exact
         # interpreter this app is itself running under, same as the old command did.
-        return f"uv pip install --python {quote.format(py)} -e {quote.format(REPO_ROOT + '[' + extra + ']')}"
+        cmd = f"uv pip install --python {quote.format(py)} -e {quote.format(REPO_ROOT + '[' + extra + ']')}"
+        if IS_WINDOWS:
+            cmd += "\n$__stepOk = ($LASTEXITCODE -eq 0)"
+        return cmd
 
     if IS_WINDOWS:
         # --disable-interactivity suppresses winget's first-run "accept Microsoft
@@ -66,14 +96,21 @@ def install_steps() -> list[dict]:
             "if (-not $__winget) { Write-Host 'winget not found -- install \"App Installer\" from the Microsoft Store "
             "(https://aka.ms/getwinget), or install the tool below manually, then click Re-check.' }\n"
         )
+        # Each branch sets $__stepOk explicitly at its own real point of success/
+        # failure rather than relying on $LASTEXITCODE -- that variable is only set by
+        # *external* processes, not cmdlets (Invoke-WebRequest, Expand-Archive, etc.),
+        # so a cmdlet-only path (like the ffmpeg direct-download fallback) leaves it
+        # holding whatever an unrelated *earlier* step's external command left behind,
+        # silently misreporting success/failure by coincidence.
         git_lfs_cmd = (
             has_winget
             + f"if ($__winget -and -not (Get-Command git-lfs -ErrorAction SilentlyContinue)) "
             f"{{ winget install -e --id GitHub.GitLFS {winget_flags} }}\n"
-            "if (Get-Command git-lfs -ErrorAction SilentlyContinue) { git lfs install; git lfs pull }"
+            "if (Get-Command git-lfs -ErrorAction SilentlyContinue) { git lfs install; git lfs pull; $__stepOk = $true } "
+            "else { $__stepOk = $false }"
         )
         ffmpeg_cmd = (
-            "if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {\n"
+            "if (Get-Command ffmpeg -ErrorAction SilentlyContinue) { $__stepOk = $true } else {\n"
             "  $ok = $false\n"
             + has_winget
             + f"  if ($__winget) {{ winget install -e --id Gyan.FFmpeg {winget_flags}; "
@@ -88,7 +125,11 @@ def install_steps() -> list[dict]:
             "    $bin = Join-Path (Get-ChildItem -Path $dir -Directory | Select-Object -First 1).FullName 'bin'\n"
             "    [Environment]::SetEnvironmentVariable('Path', \"$env:Path;$bin\", 'User')\n"
             "    $env:Path += \";$bin\"\n"
+            # Verify the download actually produced a working binary rather than
+            # assuming success -- this is the real, final word on whether it worked.
+            "    $ok = Test-Path (Join-Path $bin 'ffmpeg.exe')\n"
             "  }\n"
+            "  $__stepOk = $ok\n"
             "}"
         )
     else:
