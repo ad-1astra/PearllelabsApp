@@ -608,7 +608,12 @@ def _build_install_script_windows(steps: list[dict]) -> str:
             lines.append(f"Write-Host '@@INSTALL:{key}:start@@ Installing {label}...'")
             lines.append(step["cmd"])
             lines.append(
+                # $LASTEXITCODE stays $null (not 0/1) if the previous line was a
+                # PowerShell-level error -- e.g. "command not found" -- rather than an
+                # external process that actually ran and exited; without this it shows
+                # up as a blank "exit:@@" marker instead of a real code.
                 f"$code = $LASTEXITCODE\n"
+                f"if ($null -eq $code) {{ $code = 1 }}\n"
                 f'if ($code -eq 0) {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- done" }} '
                 f'else {{ Write-Host "@@INSTALL:{key}:exit:$code@@ {label} -- failed (exit $code)" }}'
             )

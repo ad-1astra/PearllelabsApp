@@ -43,10 +43,16 @@ def install_steps() -> list[dict]:
     py = sys.executable
     # Quoting: single-quoted on POSIX (bash), double-quoted on Windows (PowerShell) --
     # each shell's own string-literal syntax for a path that may contain spaces.
+    # `py` itself needs the same treatment -- a Windows user profile path routinely has
+    # a space (e.g. C:\Users\Pearl Labs\...), which silently truncated the command to
+    # everything before the space when unquoted. PowerShell also requires the call
+    # operator `&` before a quoted string used as the command itself, or it's parsed as
+    # an expression to print, not something to execute.
+    py_invoke = f'& "{py}"' if IS_WINDOWS else py
     pip_quote = '"{}"' if IS_WINDOWS else "'{}'"
 
     def pip_install(extra: str) -> str:
-        return f"{py} -m pip install -e {pip_quote.format(REPO_ROOT + '[' + extra + ']')}"
+        return f"{py_invoke} -m pip install -e {pip_quote.format(REPO_ROOT + '[' + extra + ']')}"
 
     if IS_WINDOWS:
         # --disable-interactivity suppresses winget's first-run "accept Microsoft
