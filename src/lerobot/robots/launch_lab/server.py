@@ -649,7 +649,12 @@ def _start_install_session() -> str:
 
 # ── helpers used by find_port to persist the discovered port ─────
 
-_PORT_RE = re.compile(r"(/dev/tty[^\s'\"\\,\]]+)")
+# Linux/macOS: /dev/ttyACM0-style paths. Windows: COM7-style names (confirmed against
+# real lerobot-find-port output there -- "The port of this MotorsBus is 'COM7'"). The
+# original only matched the POSIX form, so Find Ports silently never completed on
+# Windows: the port printed correctly (that's lerobot-find-port's own output, not this
+# app's), but nothing here ever recognized it to mark the level done.
+_PORT_RE = re.compile(r"(/dev/tty[^\s'\"\\,\]]+|COM\d+)")
 
 
 def _on_find_port_line(arm: str):
