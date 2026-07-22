@@ -20,6 +20,19 @@
 
 function Install-LaunchLab {
     $ErrorActionPreference = "Stop"
+
+    # The stock "Windows PowerShell" 5.1 that ships on every Windows 10/11 install
+    # sometimes defaults to TLS 1.0/1.1 for outbound HTTPS, which Firebase Hosting and
+    # astral.sh (both TLS 1.2+ only) reject -- this shows up as a confusing
+    # "Could not create SSL/TLS secure channel" error that has nothing to do with the
+    # actual PowerShell *version* despite how it's commonly described online. Force
+    # TLS 1.2 explicitly rather than relying on the OS default.
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch {
+        Write-Host "Couldn't enable TLS 1.2 ($_). If downloads below fail with an SSL/TLS error, install PowerShell 7+ (https://aka.ms/powershell) and re-run this from there."
+    }
+
     $repoUrl = "https://github.com/ad-1astra/PearllelabsApp.git"
     $installDir = if ($env:LAUNCH_LAB_INSTALL_DIR) { $env:LAUNCH_LAB_INSTALL_DIR } else { "$HOME\lerobot-launch-lab" }
 

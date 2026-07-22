@@ -86,8 +86,13 @@ class PtySession:
             # entirely -- `self.cmd` can contain arbitrary quotes (e.g. the embedded
             # YAML-ish --robot.cameras="{...}" dict) without needing to be re-escaped
             # for a second layer of shell parsing.
+            #
+            # Each run is a fresh powershell.exe process, so the TLS 1.2 fix in
+            # install.ps1 (needed for e.g. the ffmpeg fallback's HTTPS download) isn't
+            # inherited -- every generated script needs it prepended itself.
+            tls_fix = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"
             self._script_path = Path(tempfile.gettempdir()) / f"launch_lab_{uuid.uuid4().hex[:8]}.ps1"
-            self._script_path.write_text(self.cmd, encoding="utf-8")
+            self._script_path.write_text(tls_fix + self.cmd, encoding="utf-8")
             self._proc = winpty.PtyProcess.spawn(
                 f'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{self._script_path}"',
                 cwd=self.cwd,

@@ -49,15 +49,40 @@ def install_steps() -> list[dict]:
         return f"{py} -m pip install -e {pip_quote.format(REPO_ROOT + '[' + extra + ']')}"
 
     if IS_WINDOWS:
+        # --disable-interactivity suppresses winget's first-run "accept Microsoft
+        # Store source terms" prompt, which --accept-source-agreements alone doesn't
+        # always fully suppress on every winget version -- left interactive, it hangs
+        # forever waiting for a keypress that never comes from an automated PTY script.
+        winget_flags = "--silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
+        has_winget = (
+            "$__winget = [bool](Get-Command winget -ErrorAction SilentlyContinue)\n"
+            "if (-not $__winget) { Write-Host 'winget not found -- install \"App Installer\" from the Microsoft Store "
+            "(https://aka.ms/getwinget), or install the tool below manually, then click Re-check.' }\n"
+        )
         git_lfs_cmd = (
-            "if (-not (Get-Command git-lfs -ErrorAction SilentlyContinue)) "
-            "{ winget install -e --id GitHub.GitLFS --silent --accept-package-agreements --accept-source-agreements }\n"
-            "git lfs install\n"
-            "git lfs pull"
+            has_winget
+            + f"if ($__winget -and -not (Get-Command git-lfs -ErrorAction SilentlyContinue)) "
+            f"{{ winget install -e --id GitHub.GitLFS {winget_flags} }}\n"
+            "if (Get-Command git-lfs -ErrorAction SilentlyContinue) { git lfs install; git lfs pull }"
         )
         ffmpeg_cmd = (
-            "if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) "
-            "{ winget install -e --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements }"
+            "if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {\n"
+            "  $ok = $false\n"
+            + has_winget
+            + f"  if ($__winget) {{ winget install -e --id Gyan.FFmpeg {winget_flags}; "
+            "$ok = [bool](Get-Command ffmpeg -ErrorAction SilentlyContinue) }\n"
+            "  if (-not $ok) {\n"
+            "    Write-Host 'winget unavailable or failed -- downloading a portable ffmpeg build directly instead...'\n"
+            "    $dir = \"$env:LOCALAPPDATA\\lerobot-launch-lab\\ffmpeg\"\n"
+            "    New-Item -ItemType Directory -Force -Path $dir | Out-Null\n"
+            "    $zip = \"$dir\\ffmpeg.zip\"\n"
+            "    Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip\n"
+            "    Expand-Archive -Path $zip -DestinationPath $dir -Force\n"
+            "    $bin = Join-Path (Get-ChildItem -Path $dir -Directory | Select-Object -First 1).FullName 'bin'\n"
+            "    [Environment]::SetEnvironmentVariable('Path', \"$env:Path;$bin\", 'User')\n"
+            "    $env:Path += \";$bin\"\n"
+            "  }\n"
+            "}"
         )
     else:
         git_lfs_cmd = "which git-lfs >/dev/null 2>&1 || sudo apt-get install -y git-lfs; git lfs install && git lfs pull"
