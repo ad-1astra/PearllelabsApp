@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -93,12 +94,24 @@ class PtySession:
             tls_fix = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"
             self._script_path = Path(tempfile.gettempdir()) / f"launch_lab_{uuid.uuid4().hex[:8]}.ps1"
             self._script_path.write_text(tls_fix + self.cmd, encoding="utf-8")
-            self._proc = winpty.PtyProcess.spawn(
-                f'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{self._script_path}"',
-                cwd=self.cwd,
-                env=env,
-                dimensions=(30, 100),
-            )
+            argv = ["powershell", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(self._script_path)]
+            try:
+                # Preferred: hand pywinpty a plain argv list, same as the POSIX branch
+                # below, and let it do correct Windows command-line quoting -- Windows
+                # user profile paths routinely contain spaces (this one broke on
+                # exactly that), and quoting it by hand here was the actual bug: the
+                # quote characters were landing in PowerShell's -File value as literal
+                # text instead of being stripped as quoting syntax.
+                self._proc = winpty.PtyProcess.spawn(argv, cwd=self.cwd, env=env, dimensions=(30, 100))
+            except TypeError:
+                # Older/different pywinpty builds may only accept a single command-line
+                # string. subprocess.list2cmdline applies the actual Win32 quoting
+                # rules (MSVCRT / CommandLineToArgvW), unlike hand-written f-string
+                # quoting, which doesn't cover every edge case (backslash-before-quote,
+                # embedded quotes, etc.).
+                self._proc = winpty.PtyProcess.spawn(
+                    subprocess.list2cmdline(argv), cwd=self.cwd, env=env, dimensions=(30, 100)
+                )
         else:
             self._proc = ptyprocess.PtyProcess.spawn(
                 ["bash", "-lc", self.cmd],
