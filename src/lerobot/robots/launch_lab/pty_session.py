@@ -92,8 +92,16 @@ class PtySession:
             # install.ps1 (needed for e.g. the ffmpeg fallback's HTTPS download) isn't
             # inherited -- every generated script needs it prepended itself.
             tls_fix = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"
+            # `powershell.exe -File` does NOT propagate $LASTEXITCODE as its own
+            # process exit code by default -- without this, PtyProcess.exitstatus
+            # (read in _read_loop below) doesn't reflect whether the actual command
+            # (lerobot-setup-motors, lerobot-calibrate, etc.) succeeded or failed at
+            # all, which breaks every on_exit_extra(code == 0) check server.py relies
+            # on for level completion (setup_motors, calibrate, teleoperate, record,
+            # train, eval -- every non-install command).
+            exit_propagation = "\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }"
             self._script_path = Path(tempfile.gettempdir()) / f"launch_lab_{uuid.uuid4().hex[:8]}.ps1"
-            self._script_path.write_text(tls_fix + self.cmd, encoding="utf-8")
+            self._script_path.write_text(tls_fix + self.cmd + exit_propagation, encoding="utf-8")
             argv = ["powershell", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(self._script_path)]
             try:
                 # Preferred: hand pywinpty a plain argv list, same as the POSIX branch

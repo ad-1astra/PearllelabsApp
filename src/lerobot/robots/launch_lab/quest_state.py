@@ -1,5 +1,8 @@
-"""In-memory game state: XP, ranks, level completion, found ports, motor
-checklist. Single-process, single-user -- no persistence, no auth needed.
+"""Game state: XP, ranks, level completion, found ports, motor checklist.
+Single-process, single-user -- no auth needed. Persisted to a small JSON file
+under the user's home directory so quests already completed (install, find
+ports, motor IDs, calibrate, ...) don't need to be redone every time the app
+is restarted -- same file location logic on Windows and POSIX.
 
 State mutations call `_emit()`, which the server wires up to broadcast JSON
 over the `/ws/events` WebSocket. This is kept separate from the raw terminal
@@ -9,12 +12,21 @@ terminal output, never UI bookkeeping.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from lerobot.robots.setup_quest_utils import build_quest_steps
+
+# Path.home() resolves correctly on both Windows (C:\Users\<name>) and POSIX
+# (/home/<name>) -- a dot-prefixed folder there is the standard convention many CLI
+# tools use (.ssh, .aws, .docker, ...) for exactly this kind of small local state.
+STATE_FILE = Path.home() / ".lerobot-launch-lab" / "state.json"
+_PERSISTED_FIELDS = ("levels_done", "found_ports", "motor_status", "hf_user", "last_dataset_repo_id", "last_policy_repo_id")
 
 LEVELS = [
     "install",
@@ -73,6 +85,7 @@ class AppState:
         self.quest_steps = build_quest_steps()
         self._broadcast_cb: Callable[[dict], None] | None = None
         self.viewer_bridge = None  # optional ViewerBridge, wired up by main.py if available
+        self._load()
 
     # ── wiring ────────────────────────────────────────────────
     def set_broadcast(self, cb: Callable[[dict], None]) -> None:
@@ -81,6 +94,43 @@ class AppState:
     def _emit(self, event: dict[str, Any]) -> None:
         if self._broadcast_cb:
             self._broadcast_cb(event)
+
+    # ── persistence ──────────────────────────────────────────
+    def _load(self) -> None:
+        try:
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        # Merge rather than replace wholesale, and only accept known keys/levels/
+        # motors -- keeps a state file from an older version of this app (different
+        # LEVELS/MOTOR_ORDER) from crashing a newer one instead of just partially
+        # applying.
+        if isinstance(data.get("levels_done"), dict):
+            self.levels_done.update({k: v for k, v in data["levels_done"].items() if k in self.levels_done})
+        if isinstance(data.get("found_ports"), dict):
+            self.found_ports.update({k: v for k, v in data["found_ports"].items() if k in self.found_ports})
+        if isinstance(data.get("motor_status"), dict):
+            self.motor_status.update({k: v for k, v in data["motor_status"].items() if k in self.motor_status})
+        if isinstance(data.get("hf_user"), (str, type(None))):
+            self.hf_user = data["hf_user"]
+        if isinstance(data.get("last_dataset_repo_id"), (str, type(None))):
+            self.last_dataset_repo_id = data["last_dataset_repo_id"]
+        if isinstance(data.get("last_policy_repo_id"), (str, type(None))):
+            self.last_policy_repo_id = data["last_policy_repo_id"]
+
+    def _save(self) -> None:
+        payload = {field: getattr(self, field) for field in _PERSISTED_FIELDS}
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            # Write-then-rename: os.replace is atomic on both Windows and POSIX, so a
+            # crash mid-write can never leave a half-written, unparseable state file
+            # behind -- worst case the rename just doesn't happen and the old file
+            # (or none) is read back next time.
+            tmp = STATE_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp, STATE_FILE)
+        except OSError:
+            pass  # progress just won't survive a restart this time; never worth crashing over
 
     # ── progress / XP ────────────────────────────────────────
     def progress(self) -> dict:
@@ -110,6 +160,7 @@ class AppState:
     def complete_level(self, level: str, arm: str | None = None) -> None:
         with self._lock:
             self.levels_done[level] = True
+        self._save()
         self._emit({"type": "level_complete", "level": level, "arm": arm, "progress": self.progress()})
         if self.viewer_bridge:
             try:
@@ -120,11 +171,13 @@ class AppState:
     # ── ports ─────────────────────────────────────────────────
     def set_port(self, arm: str, port: str) -> None:
         self.found_ports[arm] = port
+        self._save()
         self._emit({"type": "port_found", "arm": arm, "port": port})
 
     # ── motor checklist (Set IDs level) ─────────────────────
     def reset_motor_checklist(self) -> None:
         self.motor_status = dict.fromkeys(MOTOR_ORDER, "pending")
+        self._save()
         self._emit({"type": "motor_reset", "motor_status": dict(self.motor_status)})
 
     def on_setup_motor_line(self, line: str) -> None:
@@ -139,6 +192,7 @@ class AppState:
     def _set_motor_status(self, motor: str, status: str) -> None:
         if motor in self.motor_status:
             self.motor_status[motor] = status
+            self._save()
             self._emit({"type": "motor_status", "motor": motor, "status": status})
 
     # ── install checklist ────────────────────────────────────
@@ -148,14 +202,17 @@ class AppState:
     # ── misc ──────────────────────────────────────────────────
     def set_hf_user(self, user: str) -> None:
         self.hf_user = user
+        self._save()
         self._emit({"type": "hf_user", "user": user})
 
     def set_last_dataset(self, repo_id: str) -> None:
         self.last_dataset_repo_id = repo_id
+        self._save()
         self._emit({"type": "last_dataset", "repo_id": repo_id})
 
     def set_last_policy(self, repo_id: str) -> None:
         self.last_policy_repo_id = repo_id
+        self._save()
         self._emit({"type": "last_policy", "repo_id": repo_id})
 
     def error_tip(self, session_id: str, message: str) -> None:
