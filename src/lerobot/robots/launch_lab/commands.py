@@ -190,10 +190,17 @@ def _maybe_sudo(binary: str) -> str:
     """On POSIX, resolve the full path via the invoking user's PATH and prefix with
     sudo -- `sudo <name>` alone can fail with "command not found" if the binary only
     exists in a user-local venv not on root's PATH. Windows needs neither: opening a
-    COM port doesn't require elevation, and there's no portable `sudo` equivalent."""
+    COM port doesn't require elevation, and there's no portable `sudo` equivalent.
+
+    PYTHONDONTWRITEBYTECODE=1: running as root means any .pyc bytecode cache Python
+    writes while importing (__pycache__/ next to the source, inside the shared .venv)
+    ends up root-owned -- the invoking user can then never clean or update that venv
+    again (confirmed: `uv sync` failing with "Permission denied" removing a
+    root-owned __pycache__ dir this exact command chain created on an earlier run).
+    """
     if IS_WINDOWS:
         return binary
-    return f"sudo $(which {binary})"
+    return f"sudo env PYTHONDONTWRITEBYTECODE=1 $(which {binary})"
 
 
 def setup_motors_cmd(arm: str, port: str) -> str:

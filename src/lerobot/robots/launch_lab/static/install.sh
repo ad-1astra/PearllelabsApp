@@ -9,8 +9,10 @@
 #   2. Clones (or updates) the app into ~/lerobot-launch-lab.
 #   3. Installs dependencies and starts the local helper, opening your browser to it.
 #
-# Nothing here needs sudo. It only touches ~/lerobot-launch-lab and ~/.local/bin (uv's
-# own installer target) -- both undone by deleting those two directories.
+# This script itself never needs sudo -- it only touches ~/lerobot-launch-lab and
+# ~/.local/bin (uv's own installer target), both undone by deleting those two
+# directories. It may still prompt for your password once, to fix ownership of the
+# venv if an earlier run left root-owned files in it (see the check below).
 
 set -euo pipefail
 
@@ -41,6 +43,17 @@ else
 fi
 
 cd "$INSTALL_DIR"
+
+# The in-app Calibrate/Set Motor IDs steps run under sudo (serial port access
+# sometimes needs it) -- older versions of this app didn't stop Python from writing
+# bytecode cache while running as root, leaving root-owned files inside .venv that
+# `uv sync` then can't clean up as your normal user ("Permission denied" removing a
+# __pycache__ dir). Reclaim ownership first if that's happened; a no-op, no password
+# prompt, on a venv that's already fine.
+if [ -d "$INSTALL_DIR/.venv" ] && find "$INSTALL_DIR/.venv" -not -user "$(whoami)" -print -quit 2>/dev/null | grep -q .; then
+  echo "-- Fixing ownership of some root-owned files left in .venv by an earlier run (needs your password)..."
+  sudo chown -R "$(whoami)" "$INSTALL_DIR/.venv"
+fi
 
 echo "-- Installing dependencies (first run downloads a few GB -- torch, opencv, etc. Grab a coffee.)"
 uv sync --quiet
