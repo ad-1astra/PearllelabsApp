@@ -26,7 +26,15 @@ from lerobot.robots.setup_quest_utils import build_quest_steps
 # (/home/<name>) -- a dot-prefixed folder there is the standard convention many CLI
 # tools use (.ssh, .aws, .docker, ...) for exactly this kind of small local state.
 STATE_FILE = Path.home() / ".lerobot-launch-lab" / "state.json"
-_PERSISTED_FIELDS = ("levels_done", "found_ports", "motor_status", "hf_user", "last_dataset_repo_id", "last_policy_repo_id")
+_PERSISTED_FIELDS = (
+    "levels_done",
+    "arm_levels_done",
+    "found_ports",
+    "motor_status",
+    "hf_user",
+    "last_dataset_repo_id",
+    "last_policy_repo_id",
+)
 
 LEVELS = [
     "install",
@@ -64,6 +72,13 @@ MOTOR_ORDER = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wri
 _MOTOR_PROMPT_RE = re.compile(r"Connect the controller board to the '(\w+)' motor only")
 _MOTOR_DONE_RE = re.compile(r"'(\w+)' motor id set to (\d+)")
 
+# Levels that are run once per arm (follower, then leader) -- the level itself should
+# only count as done once BOTH arms are done, not after whichever one happens first.
+# Teleoperate/Record/etc need both a follower and a leader port/calibration to work at
+# all, so marking e.g. "Find Ports" complete after only the follower was found was
+# actively misleading, not just an ordering nicety.
+ARM_LEVELS = ("find_ports", "set_motor_ids", "calibrate")
+
 
 def rank_for_xp(xp: int) -> str:
     rank = RANKS[0][1]
@@ -77,6 +92,7 @@ class AppState:
     def __init__(self):
         self._lock = threading.Lock()
         self.levels_done = dict.fromkeys(LEVELS, False)
+        self.arm_levels_done = {level: {"follower": False, "leader": False} for level in ARM_LEVELS}
         self.found_ports = {"follower": "", "leader": ""}
         self.motor_status = dict.fromkeys(MOTOR_ORDER, "pending")
         self.hf_user: str | None = None
@@ -107,6 +123,10 @@ class AppState:
         # applying.
         if isinstance(data.get("levels_done"), dict):
             self.levels_done.update({k: v for k, v in data["levels_done"].items() if k in self.levels_done})
+        if isinstance(data.get("arm_levels_done"), dict):
+            for level, arms in data["arm_levels_done"].items():
+                if level in self.arm_levels_done and isinstance(arms, dict):
+                    self.arm_levels_done[level].update({a: v for a, v in arms.items() if a in self.arm_levels_done[level]})
         if isinstance(data.get("found_ports"), dict):
             self.found_ports.update({k: v for k, v in data["found_ports"].items() if k in self.found_ports})
         if isinstance(data.get("motor_status"), dict):
@@ -152,12 +172,21 @@ class AppState:
             "progress": self.progress(),
             "found_ports": dict(self.found_ports),
             "motor_status": dict(self.motor_status),
+            "arm_levels_done": {level: dict(arms) for level, arms in self.arm_levels_done.items()},
             "hf_user": self.hf_user,
             "last_dataset_repo_id": self.last_dataset_repo_id,
             "last_policy_repo_id": self.last_policy_repo_id,
         }
 
     def complete_level(self, level: str, arm: str | None = None) -> None:
+        if level in ARM_LEVELS and arm is not None:
+            with self._lock:
+                self.arm_levels_done[level][arm] = True
+                both_done = all(self.arm_levels_done[level].values())
+            self._save()
+            self._emit({"type": "arm_level_progress", "level": level, "arm": arm, "arm_levels_done": dict(self.arm_levels_done[level])})
+            if not both_done:
+                return  # e.g. follower's port just found -- still waiting on leader
         with self._lock:
             self.levels_done[level] = True
         self._save()

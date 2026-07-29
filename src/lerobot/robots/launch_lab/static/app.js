@@ -232,14 +232,16 @@ function numberInput(id, value) {
 
 function armTabs(levelKey) {
   const ports = state.app.found_ports;
+  const armDone = (state.app.arm_levels_done && state.app.arm_levels_done[levelKey]) || {};
   const wrap = el("div", { class: "arm-tabs" });
   ["follower", "leader"].forEach((arm) => {
     const selected = state.arm[levelKey] === arm;
+    const done = !!armDone[arm];
     const tab = el("div", {
-      class: `arm-tab ${arm} ${selected ? "selected" : ""}`,
+      class: `arm-tab ${arm} ${selected ? "selected" : ""} ${done ? "arm-done" : ""}`,
       onclick: () => { state.arm[levelKey] = arm; renderLevelPanel(); },
     }, [
-      arm.toUpperCase(),
+      `${arm.toUpperCase()}${done ? " ✓" : ""}`,
       el("span", { class: "port", text: ports[arm] || "no port yet" }),
     ]);
     wrap.appendChild(tab);
@@ -512,7 +514,7 @@ function handleEvent(msg) {
     case "level_complete":
       state.app.progress = msg.progress;
       renderTopbar();
-      if (!state.currentLevel) renderQuestMap();
+      renderQuestMap(); // keep the map's DOM in sync even while looking at a level page
       toast(`${state.quest.level_titles[msg.level] || msg.level} complete`, "level-up");
       fireConfetti();
       break;
@@ -520,6 +522,15 @@ function handleEvent(msg) {
       state.app.found_ports[msg.arm] = msg.port;
       if (state.currentLevel) renderLevelPanel();
       toast(`${msg.arm.toUpperCase()} port found: ${msg.port}`);
+      break;
+    case "arm_level_progress":
+      // find_ports/set_motor_ids/calibrate only fully complete once BOTH arms are
+      // done -- this fires after just one, so the arm tab can show "done" for that
+      // arm immediately without waiting for (or implying) the whole level is done.
+      if (!state.app.arm_levels_done) state.app.arm_levels_done = {};
+      state.app.arm_levels_done[msg.level] = msg.arm_levels_done;
+      if (state.currentLevel === msg.level) renderLevelPanel();
+      toast(`${msg.arm.toUpperCase()} done -- ${Object.values(msg.arm_levels_done).every(Boolean) ? "both arms complete" : "still need the other arm"}`);
       break;
     case "motor_reset":
       state.app.motor_status = msg.motor_status;
