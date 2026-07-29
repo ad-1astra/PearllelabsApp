@@ -222,18 +222,37 @@ def _maybe_chmod_port(port: str) -> str:
     return f'[ -w "{port}" ] || sudo chmod 666 "{port}"\n'
 
 
+def _clean_env_invoke(binary: str) -> str:
+    """Run `binary` isolated from a possibly-conflicting outer Python environment.
+
+    These commands run in a login shell (`bash -lc`, see pty_session.py), which
+    re-sources .bashrc -- if that activates something like a conda base environment
+    (as confirmed here: the shell prompt shows `(base) user@...`), whatever it sets
+    (PYTHONPATH, a user-site dir, etc.) leaks into the venv-shebang-invoked script,
+    which is a strong, testable candidate for a *different* scservo_sdk than the one
+    actually installed in the venv getting picked up. `env -u PYTHONPATH` strips an
+    inherited PYTHONPATH just for this one invocation (harmless if none was set);
+    PYTHONNOUSERSITE=1 excludes ~/.local's site-packages the same way.
+    """
+    if IS_WINDOWS:
+        return binary
+    return f"env -u PYTHONPATH PYTHONNOUSERSITE=1 {binary}"
+
+
 def setup_motors_cmd(arm: str, port: str) -> str:
     prefix = _maybe_chmod_port(port)
+    binary = _clean_env_invoke("lerobot-setup-motors")
     if arm == "follower":
-        return f"{prefix}lerobot-setup-motors --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"{prefix}lerobot-setup-motors --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{prefix}{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def calibrate_cmd(arm: str, port: str) -> str:
     prefix = _maybe_chmod_port(port)
+    binary = _clean_env_invoke("lerobot-calibrate")
     if arm == "follower":
-        return f"{prefix}lerobot-calibrate --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"{prefix}lerobot-calibrate --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{prefix}{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def camera_spec(cameras: list[dict]) -> str:
