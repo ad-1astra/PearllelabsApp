@@ -35,6 +35,31 @@ def _installed(dist_name: str) -> bool:
         return False
 
 
+def _feetech_healthy() -> bool:
+    """`_installed("feetech-servo-sdk")` alone isn't enough -- confirmed on real
+    hardware: a distribution record can exist (enough for importlib.metadata to not
+    raise PackageNotFoundError, and even print `version = None` rather than raising,
+    since a Message object with a missing header returns None instead of KeyError)
+    while the actual scservo_sdk package content is corrupted/incomplete -- a
+    namespace package with no real code and no PortHandler. The "already installed"
+    check being fooled by this is why Install/Re-check kept silently skipping it
+    instead of ever fixing it. Actually importing and checking for the real attribute
+    is the only way to detect this.
+
+    sys.modules is cleared first since this long-running server process may have
+    already cached a broken import from an earlier check within the same run --
+    without this, a reinstall wouldn't be picked up as fixed until the server itself
+    restarts.
+    """
+    sys.modules.pop("scservo_sdk", None)
+    try:
+        import scservo_sdk
+
+        return hasattr(scservo_sdk, "PortHandler")
+    except ImportError:
+        return False
+
+
 def _sync_windows_ffmpeg_path() -> None:
     """Make a successful Windows ffmpeg fallback download (see install_steps) visible
     to this process, not just future ones.
@@ -73,14 +98,21 @@ def install_steps() -> list[dict]:
     # Windows user profile path routinely has one, e.g. C:\Users\Pearl Labs\...).
     quote = '"{}"' if IS_WINDOWS else "'{}'"
 
-    def pip_install(extra: str) -> str:
+    def pip_install(extra: str, reinstall_package: str | None = None) -> str:
         # `uv pip install`, not `{py} -m pip install`: venvs created by `uv sync`/
         # `uv venv` don't include pip at all by default (uv is its own installer, not
         # a pip wrapper) -- confirmed by testing an actual uv-created venv, where
         # `python -m pip` fails with "No module named pip" even though the venv and
         # its packages are otherwise completely normal. `--python` targets the exact
         # interpreter this app is itself running under, same as the old command did.
-        cmd = f"uv pip install --python {quote.format(py)} -e {quote.format(REPO_ROOT + '[' + extra + ']')}"
+        #
+        # reinstall_package: force uv to actually reinstall a specific package even
+        # though it considers the version constraint already satisfied -- needed for
+        # feetech-servo-sdk, confirmed corrupted on real hardware (a distribution
+        # record exists, but the actual scservo_sdk content doesn't); without this uv
+        # has no reason to touch files it thinks are already correct.
+        reinstall_flag = f" --reinstall-package {reinstall_package}" if reinstall_package else ""
+        cmd = f"uv pip install --python {quote.format(py)}{reinstall_flag} -e {quote.format(REPO_ROOT + '[' + extra + ']')}"
         if IS_WINDOWS:
             cmd += "\n$__stepOk = ($LASTEXITCODE -eq 0)"
         return cmd
@@ -140,8 +172,8 @@ def install_steps() -> list[dict]:
         {
             "key": "feetech",
             "label": "Motor SDK -- lerobot[feetech]",
-            "already_installed": _installed("feetech-servo-sdk"),
-            "cmd": pip_install("feetech"),
+            "already_installed": _feetech_healthy(),
+            "cmd": pip_install("feetech", reinstall_package="feetech-servo-sdk"),
         },
         {
             "key": "core_scripts",
