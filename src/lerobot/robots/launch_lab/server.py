@@ -184,24 +184,37 @@ def _start_local_session(action: str, cmd: str, on_line=None, on_exit_extra=None
             _active_session_id = None
         _session_exit_code[session_id] = code
         stopped = _sessions[session_id].stopped
+
+        # Level-progression callback (e.g. "calibrate finished successfully" ->
+        # complete_level) fires FIRST and unconditionally (aside from the deliberate
+        # `stopped` check below) -- this must never be skipped just because something
+        # else afterward (the shell auto-continuation) had a problem. A manual Stop is
+        # a deliberate interruption, not a real completion, so it's excluded here even
+        # though we now always notify the frontend either way.
+        if on_exit_extra and not stopped:
+            on_exit_extra(code)
+
         # Once the specific command finishes -- whether it ran to completion or was
         # manually Stopped -- the terminal would otherwise go inert: typing into it
         # does nothing, since PtySession.write() is a no-op once the process has
         # exited. Auto-continue into a plain interactive shell in the same terminal so
         # it stays usable for pasting any follow-up command directly, exactly like a
         # normal terminal. Guarded so a shell's own exit (e.g. typing "exit") doesn't
-        # chain into another shell forever.
+        # chain into another shell forever. Wrapped defensively: this is a nice-to-have
+        # on top of the command that already ran, and must never be allowed to prevent
+        # the session_exit notification itself from reaching the frontend (previously,
+        # an exception here -- unverified on Windows -- would have silently swallowed
+        # everything below it, including the notification that makes "Done" ever show
+        # up at all).
         next_session_id = None
         if action != "shell":
-            next_session_id = _start_local_session("shell", commands.shell_cmd())
+            try:
+                next_session_id = _start_local_session("shell", commands.shell_cmd())
+            except Exception as exc:
+                print(f"Auto-continuation shell failed to start (non-fatal): {exc}")
         _broadcast(
             {"type": "session_exit", "session_id": session_id, "action": action, "code": code, "next_session_id": next_session_id}
         )
-        # A manual Stop is a deliberate interruption, not a real completion -- don't
-        # let it be treated as e.g. "calibrate finished successfully" for level
-        # progression, even though we now always notify the frontend either way.
-        if on_exit_extra and not stopped:
-            on_exit_extra(code)
 
     session = PtySession(
         session_id=session_id,
