@@ -301,11 +301,24 @@ function renderCalibratePanel(panel) {
   panel.appendChild(el("div", { class: "hint-card" }, ["Center every joint, press Enter, then sweep each one through its full range."]));
 }
 
+function cameraIndexField(inputId, defaultValue) {
+  // find_cameras existed as a backend action (commands.py/server.py) with no way to
+  // reach it from the UI -- Teleoperate/Record both defaulted the index to 0 with no
+  // way to discover the real one first, so a camera at any other index just failed
+  // with a raw ConnectionError instead of ever being findable through the app.
+  const input = numberInput(inputId, defaultValue);
+  const wrap = el("div", {}, [
+    field("Camera index", input),
+    el("button", { class: "btn btn-ghost btn-block", onclick: () => runAction("find_cameras") }, [iconEl("refresh"), " Find Cameras"]),
+  ]);
+  return { wrap, input };
+}
+
 function renderTeleoperatePanel(panel) {
-  const camIndex = numberInput("teleop-cam", 0);
-  panel.appendChild(field("Camera index", camIndex));
+  const { wrap, input: camIndex } = cameraIndexField("teleop-cam", 0);
+  panel.appendChild(wrap);
   panel.appendChild(el("button", { class: "btn btn-secondary btn-block", onclick: () => runAction("teleoperate", { cameras: [{ name: "front", index_or_path: Number(camIndex.value) }] }) }, ["Start Teleoperate"]));
-  panel.appendChild(el("div", { class: "hint-card" }, ["Runs until you hit Stop. Move the leader arm and watch the follower mirror it."]));
+  panel.appendChild(el("div", { class: "hint-card" }, ["Not sure of the camera index? Run Find Cameras first -- it lists what's actually available. Runs until you hit Stop; move the leader arm and watch the follower mirror it."]));
 }
 
 function slug(text) { return (text || "task").toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "task"; }
@@ -321,8 +334,8 @@ function renderRecordPanel(panel) {
   const epLen = numberInput("record-eplen", 30);
   const resetLen = numberInput("record-reset", 10);
   panel.appendChild(el("div", { class: "field-row" }, [field("Episodes", eps), field("Episode s", epLen), field("Reset s", resetLen)]));
-  const camIndex = numberInput("record-cam", 0);
-  panel.appendChild(field("Camera index", camIndex));
+  const { wrap: camWrap, input: camIndex } = cameraIndexField("record-cam", 0);
+  panel.appendChild(camWrap);
   panel.appendChild(el("button", {
     class: "btn btn-primary btn-block",
     onclick: () => runAction("record", {
@@ -375,13 +388,15 @@ function renderEvaluatePanel(panel) {
     const repo = textInput("eval-repo", `${state.app.hf_user || "your_hf_user"}/eval_task`);
     const eps = numberInput("eval-eps", 10);
     const policyPath = textInput("eval-policy", state.app.last_policy_repo_id || "");
+    const { wrap: camWrap, input: camIndex } = cameraIndexField("eval-cam", 0);
     body.appendChild(field("Task description", task));
     body.appendChild(field("Eval dataset repo id", repo));
     body.appendChild(field("Episodes", eps));
     body.appendChild(field("Policy path / repo id", policyPath));
+    body.appendChild(camWrap);
     body.appendChild(el("button", {
       class: "btn btn-primary btn-block",
-      onclick: () => runAction("eval_record", { repo_id: repo.value, task: task.value, num_episodes: Number(eps.value), policy_path: policyPath.value, cameras: [{ name: "front", index_or_path: 0 }] }),
+      onclick: () => runAction("eval_record", { repo_id: repo.value, task: task.value, num_episodes: Number(eps.value), policy_path: policyPath.value, cameras: [{ name: "front", index_or_path: Number(camIndex.value) }] }),
     }, ["Run Real-Robot Eval"]));
   }
   function renderSim() {
