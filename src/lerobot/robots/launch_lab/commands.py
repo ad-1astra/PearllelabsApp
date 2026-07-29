@@ -271,42 +271,8 @@ def _clean_env_invoke(binary: str) -> str:
     return f"env -u PYTHONPATH PYTHONNOUSERSITE=1 {binary}"
 
 
-def _scservo_diagnostic() -> str:
-    """Prints exactly which scservo_sdk is about to be used, before the real command
-    runs -- an unresolved AttributeError (module 'scservo_sdk' has no attribute
-    'PortHandler') has recurred across several attempted fixes for the *cause*.
-
-    The first version of this diagnostic used a bare `python3`, which turned out to be
-    the bug in the diagnostic itself, not (necessarily) the real one: `python3` is
-    resolved via PATH, and with a conda base environment auto-activated (confirmed:
-    the shell prompt shows `(base) user@...`), PATH resolves it to conda's own
-    Python -- a completely different interpreter than the one that actually runs
-    lerobot-setup-motors, which is invoked via an absolute-path shebang and never goes
-    through PATH at all. scservo_sdk.__file__ = None in that first result was the
-    tell: that's the signature of a namespace package, not the real installed one --
-    consistent with conda's Python resolving some unrelated, irrelevant `scservo_sdk`-
-    named directory rather than the real feetech-servo-sdk install. Using sys.executable
-    (the exact interpreter this diagnostic and the real command both need to share)
-    instead makes this an actual apples-to-apples check. POSIX only for now -- the
-    reported crash is on Linux; unlike Windows, IS_WINDOWS's setup_motors_cmd doesn't
-    need this bash-specific diagnostic (yet).
-    """
-    if IS_WINDOWS:
-        return ""
-    py = sys.executable
-    py_line = (
-        "import scservo_sdk, sys; "
-        "print('[DIAG] scservo_sdk.__file__ =', scservo_sdk.__file__); "
-        "print('[DIAG] has PortHandler =', hasattr(scservo_sdk, 'PortHandler')); "
-        "print('[DIAG] python executable =', sys.executable); "
-        "import importlib.metadata as m; "
-        "print('[DIAG] feetech-servo-sdk version =', m.version('feetech-servo-sdk'))"
-    )
-    return f"env -u PYTHONPATH PYTHONNOUSERSITE=1 '{py}' -c \"{py_line}\" 2>&1\n"
-
-
 def setup_motors_cmd(arm: str, port: str) -> str:
-    prefix = _maybe_chmod_port(port) + _scservo_diagnostic()
+    prefix = _maybe_chmod_port(port)
     binary = _clean_env_invoke("lerobot-setup-motors")
     if arm == "follower":
         return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
@@ -314,7 +280,7 @@ def setup_motors_cmd(arm: str, port: str) -> str:
 
 
 def calibrate_cmd(arm: str, port: str) -> str:
-    prefix = _maybe_chmod_port(port) + _scservo_diagnostic()
+    prefix = _maybe_chmod_port(port)
     binary = _clean_env_invoke("lerobot-calibrate")
     if arm == "follower":
         return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
