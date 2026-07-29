@@ -239,8 +239,28 @@ def _clean_env_invoke(binary: str) -> str:
     return f"env -u PYTHONPATH PYTHONNOUSERSITE=1 {binary}"
 
 
+def _scservo_diagnostic() -> str:
+    """Prints exactly which scservo_sdk is about to be used, before the real command
+    runs -- an unresolved AttributeError (module 'scservo_sdk' has no attribute
+    'PortHandler') has recurred across several attempted fixes for the *cause*, all
+    without confirming which file is actually being loaded. Emitting this
+    automatically, every time, means the answer shows up in the very next attempt
+    with no extra step required -- asking for it separately hasn't worked so far.
+    Uses the same env -u PYTHONPATH PYTHONNOUSERSITE=1 isolation as the real command
+    so it's a true apples-to-apples check, not a different environment.
+    """
+    py_line = (
+        "import scservo_sdk, sys; "
+        "print('[DIAG] scservo_sdk.__file__ =', scservo_sdk.__file__); "
+        "print('[DIAG] has PortHandler =', hasattr(scservo_sdk, 'PortHandler')); "
+        "import importlib.metadata as m; "
+        "print('[DIAG] feetech-servo-sdk version =', m.version('feetech-servo-sdk'))"
+    )
+    return f'env -u PYTHONPATH PYTHONNOUSERSITE=1 python3 -c "{py_line}" 2>&1\n'
+
+
 def setup_motors_cmd(arm: str, port: str) -> str:
-    prefix = _maybe_chmod_port(port)
+    prefix = _maybe_chmod_port(port) + _scservo_diagnostic()
     binary = _clean_env_invoke("lerobot-setup-motors")
     if arm == "follower":
         return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
@@ -248,7 +268,7 @@ def setup_motors_cmd(arm: str, port: str) -> str:
 
 
 def calibrate_cmd(arm: str, port: str) -> str:
-    prefix = _maybe_chmod_port(port)
+    prefix = _maybe_chmod_port(port) + _scservo_diagnostic()
     binary = _clean_env_invoke("lerobot-calibrate")
     if arm == "follower":
         return f"{prefix}{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
