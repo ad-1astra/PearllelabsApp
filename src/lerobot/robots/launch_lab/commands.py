@@ -186,35 +186,40 @@ def find_cameras_cmd() -> str:
     return "lerobot-find-cameras"
 
 
-def _maybe_sudo(binary: str) -> str:
-    """On POSIX, resolve the full path via the invoking user's PATH and prefix with
-    sudo -- `sudo <name>` alone can fail with "command not found" if the binary only
-    exists in a user-local venv not on root's PATH. Windows needs neither: opening a
-    COM port doesn't require elevation, and there's no portable `sudo` equivalent.
+def _maybe_chmod_port(port: str) -> str:
+    """Ensure the serial device is read/write accessible, without running the whole
+    (possibly long-running) lerobot process as root to get there.
 
-    PYTHONDONTWRITEBYTECODE=1: running as root means any .pyc bytecode cache Python
-    writes while importing (__pycache__/ next to the source, inside the shared .venv)
-    ends up root-owned -- the invoking user can then never clean or update that venv
-    again (confirmed: `uv sync` failing with "Permission denied" removing a
-    root-owned __pycache__ dir this exact command chain created on an earlier run).
+    AGENT_GUIDE.md's own documented fix for this is exactly `sudo chmod 666
+    /dev/ttyACM0` once, not wrapping every invocation in sudo -- and it matters:
+    running lerobot-setup-motors/lerobot-calibrate as root (the previous approach)
+    changes which Python environment gets resolved (confirmed on real hardware: it
+    picked up a different, incompatible `scservo_sdk` than the same command run as a
+    normal user, and separately, left root-owned bytecode cache files inside the
+    shared .venv that the normal user could no longer clean). `chmod` itself is not
+    Python and touches only the device file, so it can't cause either problem.
+
+    Skips sudo entirely if the port is already writable (e.g. the user is in the
+    `dialout` group or udev rules already grant access) -- no unnecessary password
+    prompt on systems that don't need this at all.
     """
     if IS_WINDOWS:
-        return binary
-    return f"sudo env PYTHONDONTWRITEBYTECODE=1 $(which {binary})"
+        return ""
+    return f'[ -w "{port}" ] || sudo chmod 666 "{port}"\n'
 
 
 def setup_motors_cmd(arm: str, port: str) -> str:
-    binary = _maybe_sudo("lerobot-setup-motors")
+    prefix = _maybe_chmod_port(port)
     if arm == "follower":
-        return f"{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{prefix}lerobot-setup-motors --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{prefix}lerobot-setup-motors --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def calibrate_cmd(arm: str, port: str) -> str:
-    binary = _maybe_sudo("lerobot-calibrate")
+    prefix = _maybe_chmod_port(port)
     if arm == "follower":
-        return f"{binary} --robot.type=so101_follower --robot.port={port} --robot.id=picker"
-    return f"{binary} --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
+        return f"{prefix}lerobot-calibrate --robot.type=so101_follower --robot.port={port} --robot.id=picker"
+    return f"{prefix}lerobot-calibrate --teleop.type=so101_leader --teleop.port={port} --teleop.id=commander"
 
 
 def camera_spec(cameras: list[dict]) -> str:
