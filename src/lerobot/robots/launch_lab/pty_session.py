@@ -153,7 +153,15 @@ class PtySession:
             except Exception:
                 exit_code = 1
             self._cleanup_script()
-            if self.on_exit and not self._stopped:
+            # Always notify, even on a manual Stop -- previously this was skipped
+            # entirely when _stopped, which meant the frontend never got a
+            # session_exit event for a stopped session at all: the Stop button never
+            # hid, the status dot never updated, and the terminal was left permanently
+            # inert with no way to know it had actually stopped. `self.stopped` lets
+            # the caller still distinguish "stopped" from "exited naturally" for
+            # anything that should only happen on real completion (e.g. server.py's
+            # level-progression callbacks), without losing the notification itself.
+            if self.on_exit:
                 self.on_exit(exit_code)
 
     def _cleanup_script(self) -> None:
@@ -213,3 +221,11 @@ class PtySession:
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.isalive()
+
+    @property
+    def stopped(self) -> bool:
+        """True if `stop()` was called explicitly, as opposed to the command exiting
+        (successfully or not) on its own. Callers that need to distinguish "deliberately
+        interrupted" from "actually finished" -- e.g. not treating a stopped teleoperate
+        session as if it had completed successfully -- check this from on_exit."""
+        return self._stopped

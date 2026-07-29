@@ -144,13 +144,13 @@ function setTermDot(status) {
   dot.className = `term-dot ${status || ""}`;
 }
 
-function attachTerminal(sessionId) {
+function attachTerminal(sessionId, opts) {
   ensureTerminal();
   if (termSocket) {
     try { termSocket.close(); } catch (e) { /* noop */ }
   }
   state.currentSessionId = sessionId;
-  term.clear();
+  if (!(opts && opts.keepOutput)) term.clear();
   setTermDot("running");
   $("#stop-btn").classList.remove("hidden");
 
@@ -565,7 +565,16 @@ function handleEvent(msg) {
     case "session_exit":
       if (msg.session_id === state.currentSessionId) {
         setTermDot(msg.code === 0 ? "success" : "error");
-        $("#stop-btn").classList.add("hidden");
+        if (msg.next_session_id) {
+          // The command finished (or was stopped) and the server already started a
+          // plain shell in its place -- follow it so the terminal stays usable for
+          // typing/pasting any command directly, instead of going inert. Keep the
+          // prior output visible (e.g. an error) rather than clearing it away.
+          term.write("\r\n");
+          attachTerminal(msg.next_session_id, { keepOutput: true });
+        } else {
+          $("#stop-btn").classList.add("hidden");
+        }
       }
       break;
   }

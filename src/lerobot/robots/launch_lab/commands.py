@@ -170,6 +170,20 @@ def install_steps() -> list[dict]:
     ]
 
 
+def shell_cmd() -> str:
+    """A plain interactive shell -- run after any command's session exits, so the
+    terminal stays usable for typing/pasting follow-up commands directly instead of
+    going inert once the specific lerobot-* command finishes. `exec` on POSIX replaces
+    the wrapping `bash -lc` process rather than leaving it as an idle parent; `-i`
+    guarantees interactive behavior (prompt, job control) even though it's already
+    attached to a real pty. On Windows this is just the shell itself: pty_session.py
+    always runs Windows commands from a temp .ps1 file, but a script whose entire body
+    is `powershell` launches a normal interactive nested session the same way `exec
+    bash -i` does.
+    """
+    return "powershell" if IS_WINDOWS else "exec bash -i"
+
+
 def hf_whoami_cmd() -> str:
     return "hf auth whoami"
 

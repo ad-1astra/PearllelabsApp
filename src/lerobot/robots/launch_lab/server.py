@@ -183,8 +183,24 @@ def _start_local_session(action: str, cmd: str, on_line=None, on_exit_extra=None
         if _active_session_id == session_id:
             _active_session_id = None
         _session_exit_code[session_id] = code
-        _broadcast({"type": "session_exit", "session_id": session_id, "action": action, "code": code})
-        if on_exit_extra:
+        stopped = _sessions[session_id].stopped
+        # Once the specific command finishes -- whether it ran to completion or was
+        # manually Stopped -- the terminal would otherwise go inert: typing into it
+        # does nothing, since PtySession.write() is a no-op once the process has
+        # exited. Auto-continue into a plain interactive shell in the same terminal so
+        # it stays usable for pasting any follow-up command directly, exactly like a
+        # normal terminal. Guarded so a shell's own exit (e.g. typing "exit") doesn't
+        # chain into another shell forever.
+        next_session_id = None
+        if action != "shell":
+            next_session_id = _start_local_session("shell", commands.shell_cmd())
+        _broadcast(
+            {"type": "session_exit", "session_id": session_id, "action": action, "code": code, "next_session_id": next_session_id}
+        )
+        # A manual Stop is a deliberate interruption, not a real completion -- don't
+        # let it be treated as e.g. "calibrate finished successfully" for level
+        # progression, even though we now always notify the frontend either way.
+        if on_exit_extra and not stopped:
             on_exit_extra(code)
 
     session = PtySession(
@@ -377,7 +393,14 @@ def get_quest() -> dict:
 @app.post("/api/run")
 def run_action(req: RunRequest) -> dict:
     if _active_session_id is not None and _sessions[_active_session_id].is_alive():
-        return {"error": "A command is already running. Stop it first, or wait for it to finish."}
+        # An idle auto-continuation shell (see _start_local_session's on_exit) isn't a
+        # real "something is busy" state -- it's just sitting at a prompt. Without this,
+        # every action after the very first one would be permanently blocked, since
+        # there's always an idle shell "running" once anything has ever completed.
+        if _session_kind.get(_active_session_id) == "shell":
+            _sessions[_active_session_id].stop()
+        else:
+            return {"error": "A command is already running. Stop it first, or wait for it to finish."}
 
     action = req.action
     p = req.params

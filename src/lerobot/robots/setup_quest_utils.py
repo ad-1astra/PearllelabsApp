@@ -102,4 +102,11 @@ def detect_error_suggestion(output: str) -> str:
         return "Disk is full. Free up space (old datasets/checkpoints in outputs/) and retry."
     if "policy" in text and ("not found" in text or "404" in text):
         return "That policy path/repo_id couldn't be found. Double-check --policy.path or --policy.repo_id."
+    if "scservo_sdk" in text and "attribute" in text:
+        return (
+            "The motor SDK (scservo_sdk) is missing an expected function -- likely a second, "
+            "incompatible copy shadowing the real one. In the terminal below, run: "
+            "python3 -c \"import scservo_sdk; print(scservo_sdk.__file__)\" to see which file is "
+            "actually being loaded."
+        )
     return "The app is still following the setup flow. Try the next recommended step from the log above."
