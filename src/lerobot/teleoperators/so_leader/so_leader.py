@@ -138,8 +138,19 @@ class SOLeader(Teleoperator):
 
     def setup_motors(self) -> None:
         for motor in reversed(self.bus.motors):
-            input(f"Connect the controller board to the '{motor}' motor only and press enter.")
-            self.bus.setup_motor(motor)
+            while True:
+                input(f"Connect the controller board to the '{motor}' motor only and press enter.")
+                try:
+                    self.bus.setup_motor(motor)
+                    break
+                except (RuntimeError, ConnectionError) as e:
+                    # setup_motor documents these two as "wrong/no motor connected" and
+                    # "communication failed" -- both recoverable mistakes, not reasons
+                    # to lose progress on every motor already done. Retry just this one
+                    # instead of letting the exception end the whole method. Ctrl-C
+                    # still aborts entirely, same as before -- only these two specific,
+                    # expected error types are caught here.
+                    print(f"Could not set up '{motor}': {e}\nDouble check the right motor is connected, then try again.")
             print(f"'{motor}' motor id set to {self.bus.motors[motor].id}")
 
     @check_if_not_connected
