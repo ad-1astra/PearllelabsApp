@@ -437,9 +437,26 @@ async function refreshInstallSteps() {
   if (state.currentLevel === "install") renderLevelPanel();
 }
 
+const ARM_LEVELS = ["find_ports", "set_motor_ids", "calibrate"];
+
 function renderLevelPanel() {
   const panel = $("#level-panel");
   panel.innerHTML = "";
+  // A toast + confetti alone are easy to miss (both transient, and gone entirely if
+  // you weren't looking at the screen when they fired) -- a persistent banner right
+  // in the level page itself means "is this actually done" never depends on having
+  // caught a fleeting animation or navigated back to the quest map to check.
+  const level = state.currentLevel;
+  if (state.app.progress.levels_done[level]) {
+    panel.appendChild(el("div", { class: "level-done-banner" }, [iconEl("check"), `${state.quest.level_titles[level]} complete`]));
+  } else if (ARM_LEVELS.includes(level) && state.app.arm_levels_done && state.app.arm_levels_done[level]) {
+    const arms = state.app.arm_levels_done[level];
+    const doneArms = Object.entries(arms).filter(([, done]) => done).map(([arm]) => arm.toUpperCase());
+    if (doneArms.length > 0) {
+      const pending = Object.entries(arms).filter(([, done]) => !done).map(([arm]) => arm.toUpperCase());
+      panel.appendChild(el("div", { class: "hint-card" }, [`${doneArms.join(", ")} done -- still need ${pending.join(", ")} before this level is complete.`]));
+    }
+  }
   const renderer = LEVEL_PANEL_RENDERERS[state.currentLevel];
   if (renderer) renderer(panel);
   panel.appendChild(customCommandWidget());
@@ -530,6 +547,7 @@ function handleEvent(msg) {
       state.app.progress = msg.progress;
       renderTopbar();
       renderQuestMap(); // keep the map's DOM in sync even while looking at a level page
+      if (state.currentLevel === msg.level) renderLevelPanel(); // show the done banner immediately, not just on next visit
       toast(`${state.quest.level_titles[msg.level] || msg.level} complete`, "level-up");
       fireConfetti();
       break;

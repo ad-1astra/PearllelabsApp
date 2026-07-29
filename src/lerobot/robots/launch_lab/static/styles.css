@@ -338,6 +338,20 @@ html, body {
   line-height: 1.5;
 }
 
+.level-done-banner {
+  background: var(--success-dim);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--success);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .tip-card {
   background: var(--warning-dim);
   border: 1px solid #5a4715;
