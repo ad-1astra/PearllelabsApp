@@ -177,18 +177,10 @@ async function stopCurrentSession() {
 // ---------------------------------------------------------------- quest map
 
 function levelStatus(levelKey) {
-  const levels = state.quest.levels;
-  const done = state.app.progress.levels_done;
-  let prevDone = true;
-  let status = "locked";
-  for (const key of levels) {
-    if (done[key]) status = key === levelKey ? "done" : status;
-    else if (prevDone) status = key === levelKey ? "active" : status;
-    else status = key === levelKey ? "locked" : status;
-    if (key === levelKey) break;
-    prevDone = done[key];
-  }
-  return status;
+  // Every level is always playable, in any order -- no gating on prior levels being
+  // done. Someone re-running just Calibrate, or jumping straight to Train because
+  // they already have a dataset, shouldn't be blocked by the quest-map metaphor.
+  return state.app.progress.levels_done[levelKey] ? "done" : "active";
 }
 
 function renderTopbar() {
@@ -210,15 +202,15 @@ function renderQuestMap() {
     const status = levelStatus(key);
     const node = el("div", {
       class: `quest-node ${status}`,
-      onclick: () => { if (status !== "locked") showLevel(key); },
+      onclick: () => showLevel(key),
     }, [
-      el("div", { class: "node-badge" }, [status === "done" ? iconEl("check") : status === "locked" ? iconEl("lock") : String(i + 1)]),
+      el("div", { class: "node-badge" }, [status === "done" ? iconEl("check") : String(i + 1)]),
       el("div", { class: "node-body" }, [
         el("div", { class: "node-title" }, [state.quest.level_titles[key]]),
         el("div", { class: "node-subtitle" }, [step ? step.subtitle : ""]),
       ]),
       el("div", { class: "node-reward" }, [step ? step.reward : ""]),
-      el("div", { class: "node-status" }, [status === "done" ? "Done" : status === "locked" ? "Locked" : "Play"]),
+      el("div", { class: "node-status" }, [status === "done" ? "Done" : "Play"]),
     ]);
     path.appendChild(node);
   });
