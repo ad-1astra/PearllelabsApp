@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -211,6 +212,23 @@ class PtySession:
         """Force-stop the session (used when the user taps Stop or closes it)."""
         self._stopped = True
         if self._proc is not None and self._proc.isalive():
+            if not IS_WINDOWS:
+                # ptyprocess.PtyProcess.kill() only signals the single directly-spawned
+                # PID (confirmed by reading its source: `os.kill(self.pid, sig)`) --
+                # our commands are frequently multi-statement scripts (e.g.
+                # setup_motors_cmd/calibrate_cmd run a chmod check, THEN the real
+                # command as a separate statement), which bash runs by forking a
+                # child rather than exec-replacing itself for anything but a single
+                # trailing command. Killing only that top-level bash leaves the real
+                # work (sudo, lerobot-setup-motors, etc.) orphaned and still running,
+                # still holding the pty open -- Stop looks like it does nothing, and
+                # the terminal looks permanently stuck. The pty-spawned process is a
+                # session/process-group leader by construction, so killing the whole
+                # group reliably tears down everything at once.
+                try:
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             try:
                 self._proc.terminate(force=True)
             except TypeError:
